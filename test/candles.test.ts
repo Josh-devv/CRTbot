@@ -166,7 +166,7 @@ test("W1 and MN1 buckets are session-anchored", () => {
   );
 });
 
-test("the execution candle is visible in the decisions log", () => {
+test("the execution candle bucket is visible in the decisions log", () => {
   const start = Date.UTC(2021, 0, 4, 7, 0, 0); // 02:00 NY
   const bars: Bar[] = [
     { time: start, open: 1.2, high: 1.2005, low: 1.1995, close: 1.2 },
@@ -177,8 +177,8 @@ test("the execution candle is visible in the decisions log", () => {
   const entry = result.decisions.find((d) => d.action === "enter");
 
   assert.deepEqual(
-    entry?.candle,
+    entry?.bucket,
     { timeframe: "M15", time: Date.UTC(2021, 0, 4, 7, 0, 0) },
-    "the M15 candle is logged with the decision",
+    "the M15 candle bucket is logged with the decision",
   );
 });

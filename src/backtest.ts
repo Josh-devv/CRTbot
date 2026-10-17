@@ -43,14 +43,14 @@ export interface BacktestOptions {
   strategy?: Strategy;
 }
 
-/** The Axis System fixes execution at M15, so every decision names its M15 candle. */
+/** The Axis System fixes execution at M15, so every decision names its M15 candle bucket. */
 const EXECUTION_TIMEFRAME = "M15";
 
-function contextOf(ms: number, cfg: StrategyConfig): Pick<Decision, "session" | "killzone" | "candle"> {
+function contextOf(ms: number, cfg: StrategyConfig): Pick<Decision, "session" | "killzone" | "bucket"> {
   return {
     session: sessionOf(ms, cfg.session),
     killzone: killzoneOf(ms, cfg.session),
-    candle: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(ms, EXECUTION_TIMEFRAME, cfg) },
+    bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(ms, EXECUTION_TIMEFRAME, cfg) },
   };
 }
 

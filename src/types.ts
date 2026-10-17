@@ -57,7 +57,7 @@ export interface Decision {
   reason: string;
   session?: SessionName;
   killzone?: KillzoneName | null;
-  candle?: { timeframe: Timeframe; time: number };
+  bucket?: { timeframe: Timeframe; time: number };
 }
 
 export interface Trade {
