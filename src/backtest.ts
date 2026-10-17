@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
+import { bucketStart } from "./candles.js";
 import { computeStats } from "./stats.js";
 import { placeholderLong, type Strategy, type StrategyContext } from "./strategy.js";
+import { killzoneOf, sessionDayStart, sessionOf } from "./time.js";
 import type {
   BacktestResult,
   Bar,
@@ -11,12 +13,6 @@ import type {
   StrategyConfig,
   Trade,
 } from "./types.js";
-
-const MS_PER_DAY = 86_400_000;
-
-function utcDay(time: number): number {
-  return Math.floor(time / MS_PER_DAY);
-}
 
 /** Deterministic stringify: sorts object keys at every level. */
 function stableStringify(value: unknown): string {
@@ -45,6 +41,17 @@ function checkExit(trade: Trade, b: Bar): "target" | "stop" | null {
 
 export interface BacktestOptions {
   strategy?: Strategy;
+}
+
+/** The Axis System fixes execution at M15, so every decision names its M15 candle. */
+const EXECUTION_TIMEFRAME = "M15";
+
+function contextOf(ms: number, cfg: StrategyConfig): Pick<Decision, "session" | "killzone" | "candle"> {
+  return {
+    session: sessionOf(ms, cfg.session),
+    killzone: killzoneOf(ms, cfg.session),
+    candle: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(ms, EXECUTION_TIMEFRAME, cfg) },
+  };
 }
 
 /**
@@ -100,15 +107,16 @@ export function runBacktest(
           action: "exit",
           direction: openTrade.direction,
           reason: `${hit} hit`,
+          ...contextOf(bar.time, cfg),
         });
         openTrade = null;
         continue; // one action per bar
       }
     }
 
-    // 2) Day rollover bookkeeping.
-    const day = utcDay(bar.time);
-    const isNewDay = i === 0 || utcDay(series.bars[i - 1]!.time) !== day;
+    // 2) Session-day rollover bookkeeping.
+    const day = sessionDayStart(bar.time, cfg.session);
+    const isNewDay = i === 0 || sessionDayStart(series.bars[i - 1]!.time, cfg.session) !== day;
     if (day !== currentDay) {
       currentDay = day;
       tradesToday = 0;
@@ -154,6 +162,7 @@ export function runBacktest(
           action: "enter",
           direction: signal.direction,
           reason: signal.reason,
+          ...contextOf(bar.time, cfg),
         });
       }
     }

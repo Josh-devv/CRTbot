@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
 import { runBacktest } from "../src/backtest.js";
+import { DEFAULT_SESSION_CONFIG } from "../src/time.js";
 import type { Bar, BarSeries, StrategyConfig } from "../src/types.js";
 
 function bar(time: number, o: number, h: number, l: number, c: number): Bar {
@@ -33,7 +34,7 @@ function risingSeries(): BarSeries {
 function baseConfig(): StrategyConfig {
   return {
     instrument: "GBPUSD",
-    sessionTz: "America/New_York",
+    session: DEFAULT_SESSION_CONFIG,
     strategy: { stopDistance: 0.001 },
     risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01 },
     costs: { spread: 0, commission: 0, slippage: 0 },

@@ -9,12 +9,16 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/backtest.test.ts",
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
     "backtest": "tsx src/cli.ts backtest"
   },
   "devDependencies": {
+    "@types/luxon": "^3.7.6",
     "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "luxon": "^3.7.2"
   }
 }

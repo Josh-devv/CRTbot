@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 
 import { runBacktest } from "./backtest.js";
+import { DEFAULT_SESSION_CONFIG } from "./time.js";
 import type { BacktestResult, Bar, BarSeries, StrategyConfig } from "./types.js";
 
 const M15 = 15 * 60 * 1000;
@@ -30,7 +31,7 @@ function syntheticSeries(): BarSeries {
 function demoConfig(): StrategyConfig {
   return {
     instrument: "GBPUSD",
-    sessionTz: "America/New_York",
+    session: DEFAULT_SESSION_CONFIG,
     strategy: { stopDistance: 0.001 },
     risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01 },
     costs: { spread: 0.0001, commission: 0, slippage: 0 },
