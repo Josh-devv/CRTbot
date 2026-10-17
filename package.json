@@ -1,0 +1,20 @@
+{
+  "name": "crtbot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CRTbot — Sham 'Axis System' backtest engine for GBPUSD and EURUSD",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/backtest.test.ts",
+    "backtest": "tsx src/cli.ts backtest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
