@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { bucketStart } from "./candles.js";
 import { computeStats } from "./stats.js";
+import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
 import { placeholderLong, type Strategy, type StrategyContext } from "./strategy.js";
 import { killzoneOf, sessionDayStart, sessionOf } from "./time.js";
 import type {
@@ -46,11 +47,17 @@ export interface BacktestOptions {
 /** The Axis System fixes execution at M15, so every decision names its M15 candle bucket. */
 const EXECUTION_TIMEFRAME = "M15";
 
-function contextOf(ms: number, cfg: StrategyConfig): Pick<Decision, "session" | "killzone" | "bucket"> {
+function contextOf(
+  bar: Bar,
+  index: number,
+  points: SignificantPoints,
+  cfg: StrategyConfig,
+): Pick<Decision, "session" | "killzone" | "bucket" | "structure"> {
   return {
-    session: sessionOf(ms, cfg.session),
-    killzone: killzoneOf(ms, cfg.session),
-    bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(ms, EXECUTION_TIMEFRAME, cfg) },
+    session: sessionOf(bar.time, cfg.session),
+    killzone: killzoneOf(bar.time, cfg.session),
+    bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
+    structure: structureSnapshot(points, index, bar.close) ?? undefined,
   };
 }
 
@@ -66,6 +73,7 @@ export function runBacktest(
   const strategy = options.strategy ?? placeholderLong(cfg);
   const halfSpread = cfg.costs.spread / 2;
   const slip = cfg.costs.slippage;
+  const points = findSignificantPoints(series.bars, cfg.structure);
 
   const trades: Trade[] = [];
   const decisions: Decision[] = [];
@@ -107,7 +115,7 @@ export function runBacktest(
           action: "exit",
           direction: openTrade.direction,
           reason: `${hit} hit`,
-          ...contextOf(bar.time, cfg),
+          ...contextOf(bar, i, points, cfg),
         });
         openTrade = null;
         continue; // one action per bar
@@ -162,7 +170,7 @@ export function runBacktest(
           action: "enter",
           direction: signal.direction,
           reason: signal.reason,
-          ...contextOf(bar.time, cfg),
+          ...contextOf(bar, i, points, cfg),
         });
       }
     }

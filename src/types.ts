@@ -44,10 +44,28 @@ export interface BarSeries {
 export interface StrategyConfig {
   instrument: Instrument;
   session: SessionConfig;
+  /** Structural significance tuning. */
+  structure?: { swingWidth: number };
   strategy: { stopDistance: number };
   risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
   costs: { spread: number; commission: number; slippage: number };
   initialEquity: number;
+}
+
+/** Premium is the upper half of the dealing range, discount the lower half. */
+export type PricePosition = "premium" | "discount" | "equilibrium";
+
+/** Draw On Liquidity — where price is drawn to. */
+export interface Dol {
+  longTerm: number;
+  shortTerm: number;
+}
+
+/** The structural read at a point in time, as recorded on a decision. */
+export interface StructureSnapshot {
+  range: { high: number; low: number; equilibrium: number };
+  position: PricePosition;
+  dol: Dol | null;
 }
 
 export interface Decision {
@@ -58,6 +76,7 @@ export interface Decision {
   session?: SessionName;
   killzone?: KillzoneName | null;
   bucket?: { timeframe: Timeframe; time: number };
+  structure?: StructureSnapshot;
 }
 
 export interface Trade {
