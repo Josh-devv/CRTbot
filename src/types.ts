@@ -81,6 +81,63 @@ export interface NewsConfig {
   standDown: boolean;
 }
 
+/**
+ * One session day, as the day itself is forming: its OHLC so far plus, once the Asian window has
+ * traded inside it, that window's range. Shared by the exception protocols (§8) and the
+ * expansion-day test (§10), both of which read a day's shape rather than its bars.
+ */
+export interface DayFacts {
+  /** Epoch ms of the session day's start. */
+  day: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  /** The Asian window's range, once that window has traded inside this session day. */
+  asia?: { high: number; low: number };
+}
+
+/**
+ * The day reads judge a session day from: every session day strictly behind it, the day itself
+ * as it stands, and the config to judge it under. Shared by the exception protocols (§8) and the
+ * expansion-day test (§10).
+ */
+export interface DayRead {
+  /** Every session day strictly before the one being read. */
+  completedDays: DayFacts[];
+  /** The day being read, as it stands on this bar. */
+  today: DayFacts;
+  cfg: StrategyConfig;
+}
+
+/** Which session the expansion-day test expects to deliver the move (§10). */
+export type ExpansionSession = "london" | "newYork" | "neither";
+
+/**
+ * The verdict of the expansion-day test (§10): whether today is an expansion day, which session
+ * the expansion is expected in, and the read to show for it.
+ */
+export interface ExpansionTest {
+  isExpansionDay: boolean;
+  session: ExpansionSession;
+  reason: string;
+}
+
+/**
+ * The expansion-day test (§10). Sham's reaction to a day that is not an expansion day is to be
+ * selective, so this stands the day down only when explicitly enforced.
+ */
+export interface ExpansionConfig {
+  /** Stand the day down when it is not an expansion day. */
+  enforce: boolean;
+  /** Asia at or below this multiple of its average is consolidating — London expansion likely. */
+  consolidationFactor?: number;
+  /** Asia at or above this multiple of its average has already expanded — New York expands. */
+  expansionFactor?: number;
+  /** How many completed days a range is averaged over. */
+  lookbackDays?: number;
+}
+
 export interface Bar {
   /** Epoch milliseconds, UTC. */
   time: number;
@@ -107,6 +164,8 @@ export interface StrategyConfig {
   exceptions?: ExceptionConfig;
   /** News-day stand-down (§9). Absent enforces it whenever `session.newsDays` lists the day. */
   news?: NewsConfig;
+  /** The expansion-day test (§10). Absent leaves the verdict logged but suppresses nothing. */
+  expansionDay?: ExpansionConfig;
   risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
   costs: { spread: number; commission: number; slippage: number };
   initialEquity: number;
@@ -218,6 +277,8 @@ export interface Decision {
   exceptions?: ExceptionProtocol[];
   /** Set when this session day is one of the configured news days (§9). */
   newsDay?: boolean;
+  /** The expansion-day verdict for this session day (§10). */
+  expansionTest?: ExpansionTest;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;

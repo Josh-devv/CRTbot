@@ -3,9 +3,10 @@ import { createHash } from "node:crypto";
 import { bucketStart } from "./candles.js";
 import { biasSnapshot } from "./bias.js";
 import { contextSnapshot } from "./context.js";
-import { dayStandDown, exceptionsInPlay, foldDay, type DayFacts } from "./exceptions.js";
+import { dayStandDown, exceptionsInPlay, foldDay } from "./exceptions.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { findOrderBlocks } from "./orderblocks.js";
+import { expansionTest } from "./profiles.js";
 import { correlatedPair, smtDivergence } from "./smt.js";
 import { computeStats } from "./stats.js";
 import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
@@ -17,10 +18,12 @@ import type {
   BarSeries,
   BiasDirection,
   ContextSnapshot,
+  DayFacts,
   Decision,
   Direction,
   EquityPoint,
   ExceptionProtocol,
+  ExpansionTest,
   LiquidityEvent,
   OrderBlock,
   SmtDivergence,
@@ -123,6 +126,7 @@ function decisionReads(input: {
   sweep: LiquidityEvent | null;
   exceptions: ExceptionProtocol[];
   newsDay: boolean;
+  expansionTest?: ExpansionTest;
 }): Pick<
   Decision,
   | "session"
@@ -132,13 +136,26 @@ function decisionReads(input: {
   | "smt"
   | "exceptions"
   | "newsDay"
+  | "expansionTest"
   | "bucket"
   | "structure"
   | "liquidity"
   | "orderBlocks"
 > {
-  const { bar, index, cfg, points, orderBlocks, bias, context, smt, sweep, exceptions, newsDay } =
-    input;
+  const {
+    bar,
+    index,
+    cfg,
+    points,
+    orderBlocks,
+    bias,
+    context,
+    smt,
+    sweep,
+    exceptions,
+    newsDay,
+    expansionTest,
+  } = input;
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
@@ -147,6 +164,7 @@ function decisionReads(input: {
     smt: smt ?? undefined,
     exceptions: exceptions.length > 0 ? exceptions : undefined,
     newsDay: newsDay || undefined,
+    expansionTest,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
     liquidity: sweep ?? undefined,
@@ -259,7 +277,8 @@ export function runBacktest(
 
     const inPlay = exceptionsInPlay({ completedDays, today, cfg });
     const newsDay = isNewsDay(bar.time, cfg.session);
-    const dayPlan = dayStandDown({ exceptions: inPlay, newsDay, cfg });
+    const expansion = expansionTest({ completedDays, today, cfg });
+    const dayPlan = dayStandDown({ exceptions: inPlay, newsDay, expansionTest: expansion, cfg });
 
     const blocksHere = blocksByEngulfing.get(i) ?? [];
     const sweep = liquidityEventAt(bar, i, points);
@@ -287,6 +306,7 @@ export function runBacktest(
       sweep,
       exceptions: inPlay.map((exception) => exception.protocol),
       newsDay,
+      expansionTest: expansion,
     });
 
     // 1) Manage an open trade against this bar.
@@ -309,9 +329,9 @@ export function runBacktest(
       }
     }
 
-    // 2) An exception protocol (§8) or a news day (§9) skips the day entirely: any setup still
-    // resting is dropped so it cannot fill, the skip is logged once, and no setup is even asked
-    // for. An open trade is still managed above.
+    // 2) An exception protocol (§8), a news day (§9), or an enforced non-expansion day (§10)
+    // skips the day entirely: any setup still resting is dropped so it cannot fill, the skip is
+    // logged once, and no setup is even asked for. An open trade is still managed above.
     if (dayPlan.standDown) {
       pending = null;
       if (stoodDownDay !== day) {

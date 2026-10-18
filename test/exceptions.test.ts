@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  dayStandDown,
-  exceptionsInPlay,
-  foldDay,
-  type DayFacts,
-} from "../src/exceptions.js";
+import { dayStandDown, exceptionsInPlay, foldDay } from "../src/exceptions.js";
 import { DEFAULT_SESSION_CONFIG, sessionDayStart, sessionOf } from "../src/time.js";
-import type { Bar, ExceptionProtocol, StrategyConfig } from "../src/types.js";
+import type { Bar, DayFacts, ExceptionProtocol, StrategyConfig } from "../src/types.js";
 
 /**
  * A session day that starts at 17:00 New York. Every date used here is in January, so 22:00 UTC

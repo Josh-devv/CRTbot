@@ -124,6 +124,15 @@ export function sessionWindowStart(
     .toMillis();
 }
 
+/**
+ * True on the late-week session days — Thursday and Friday — when a week that has already
+ * expanded says something, and a counter move is expected (§8.2, §10).
+ */
+export function isLateWeek(ms: number, cfg: SessionConfig): boolean {
+  const weekday = weekdayOf(ms, cfg);
+  return weekday === 4 || weekday === 5;
+}
+
 /** Epoch ms of the FX week start (Sunday at the day boundary) at or before `ms`. */
 export function weekStart(ms: number, cfg: SessionConfig): number {
   let start = sessionDayStart(ms, cfg);

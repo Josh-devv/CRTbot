@@ -1,8 +1,17 @@
-import { sessionDayStart, sessionOf, weekStart, weekdayOf } from "./time.js";
-import type { Bar, ExceptionProtocol, StrategyConfig } from "./types.js";
+import { asianProfile, weekHasExpanded } from "./profiles.js";
+import { isLateWeek, sessionDayStart, sessionOf } from "./time.js";
+import type {
+  Bar,
+  DayFacts,
+  DayRead,
+  ExceptionProtocol,
+  ExpansionTest,
+  StrategyConfig,
+} from "./types.js";
 
 /**
- * The exception protocols (ruleset §8), and the news-day filter (§9).
+ * The exception protocols (ruleset §8), the news-day filter (§9), and the enforcement of the
+ * expansion-day test (§10).
  *
  * §8 recognises exactly three protocols — 4-day, weekly-profile (including TGIF), and
  * Asian-range — and names no others. When one is in play Sham's action is to skip the day
@@ -15,21 +24,6 @@ import type { Bar, ExceptionProtocol, StrategyConfig } from "./types.js";
 
 /** A day counts as already expanded once its Asian range reaches this multiple of the average. */
 const ASIAN_RANGE_FACTOR = 1.5;
-
-/** How many completed days the Asian range is measured against. */
-const ASIAN_AVERAGE_DAYS = 5;
-
-/** One session day, as the day itself is forming. */
-export interface DayFacts {
-  /** Epoch ms of the session day's start. */
-  day: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  /** The Asian window's range, once that window has traded inside this session day. */
-  asia?: { high: number; low: number };
-}
 
 /** An exception protocol that is in play, with the reason to show for it. */
 export interface ExceptionInPlay {
@@ -81,19 +75,8 @@ function dayDirection(day: DayFacts): "up" | "down" | "flat" {
   return "flat";
 }
 
-/** The range a set of days spanned, high to low. */
-function rangeOf(days: DayFacts[]): number {
-  return Math.max(...days.map((day) => day.high)) - Math.min(...days.map((day) => day.low));
-}
-
 /** The exception protocols in play for the day being built (§8), in ruleset order. */
-export function exceptionsInPlay(input: {
-  /** Every session day strictly before the one being built. */
-  completedDays: DayFacts[];
-  /** The day being built, as it stands on this bar. */
-  today: DayFacts;
-  cfg: StrategyConfig;
-}): ExceptionInPlay[] {
+export function exceptionsInPlay(input: DayRead): ExceptionInPlay[] {
   const { completedDays, today, cfg } = input;
   const inPlay: ExceptionInPlay[] = [];
 
@@ -112,43 +95,19 @@ export function exceptionsInPlay(input: {
   // §8.2 — the weekly profile has already delivered the move, and it is late in the week
   // (TGIF, so Thursday or Friday). Expansion is read as this week's range having reached the
   // previous week's.
-  const weekday = weekdayOf(today.day, cfg.session);
-  if (weekday === 4 || weekday === 5) {
-    // Only the current and previous week can bear on the comparison; two weeks always contain
-    // both, which keeps this scan bounded however long the run is.
-    const byWeek = new Map<number, DayFacts[]>();
-    for (const day of [...completedDays.slice(-14), today]) {
-      const week = weekStart(day.day, cfg.session);
-      const bucket = byWeek.get(week);
-      if (bucket === undefined) byWeek.set(week, [day]);
-      else bucket.push(day);
-    }
-
-    const weeks = [...byWeek.keys()].sort((a, b) => a - b);
-    const thisWeek = byWeek.get(weeks[weeks.length - 1]!);
-    const priorWeek = byWeek.get(weeks[weeks.length - 2]!);
-    if (thisWeek !== undefined && priorWeek !== undefined) {
-      if (rangeOf(thisWeek) >= rangeOf(priorWeek)) {
-        inPlay.push({
-          protocol: "weekly-profile",
-          reason: "weekly-profile protocol (TGIF): the week has already expanded",
-        });
-      }
-    }
+  if (isLateWeek(today.day, cfg.session) && weekHasExpanded({ completedDays, today, cfg })) {
+    inPlay.push({
+      protocol: "weekly-profile",
+      reason: "weekly-profile protocol (TGIF): the week has already expanded",
+    });
   }
 
   // §8.3 — Asia expanded early, so London and New York tend to move counter to rebalance.
-  const history = completedDays
-    .slice(-ASIAN_AVERAGE_DAYS)
-    .map((day) => day.asia)
-    .filter((asia): asia is { high: number; low: number } => asia !== undefined);
-  if (today.asia !== undefined && history.length === ASIAN_AVERAGE_DAYS) {
-    const total = history.reduce((sum, asia) => sum + (asia.high - asia.low), 0);
-    const average = total / history.length;
+  const asia = asianProfile({ completedDays, today, cfg });
+  if (asia.ratio !== null) {
     const factor = cfg.exceptions?.asianRangeFactor ?? ASIAN_RANGE_FACTOR;
-    const expanded = today.asia.high - today.asia.low;
-    if (expanded >= factor * average) {
-      const multiple = (expanded / average).toFixed(1);
+    if (asia.ratio >= factor) {
+      const multiple = asia.ratio.toFixed(1);
       inPlay.push({
         protocol: "asian-range",
         reason: `asian-range protocol: Asia expanded early (${multiple}x its recent average)`,
@@ -181,10 +140,15 @@ function newsStandDown(cfg: StrategyConfig): boolean {
   return cfg.news?.standDown ?? true;
 }
 
-/** Skip the day entirely (§8) if any protocol in play is enforced, or it is a news day (§9). */
+/**
+ * Whether the day is skipped entirely: an enforced exception protocol (§8), a news day (§9), or
+ * an enforced expansion test that did not call today an expansion day (§10).
+ */
 export function dayStandDown(input: {
   exceptions: ExceptionInPlay[];
   newsDay: boolean;
+  /** The expansion-day verdict (§10), when the test is configured. */
+  expansionTest?: ExpansionTest;
   cfg: StrategyConfig;
 }): DayStandDown {
   const reasons = input.exceptions
@@ -192,6 +156,11 @@ export function dayStandDown(input: {
     .map((exception) => exception.reason);
 
   if (input.newsDay && newsStandDown(input.cfg)) reasons.push("news day (NFP/CPI/FOMC)");
+
+  const expansion = input.expansionTest;
+  if (expansion !== undefined && input.cfg.expansionDay?.enforce && !expansion.isExpansionDay) {
+    reasons.push(expansion.reason);
+  }
 
   return { standDown: reasons.length > 0, reasons };
 }
