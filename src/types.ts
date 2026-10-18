@@ -68,6 +68,24 @@ export interface StructureSnapshot {
   dol: Dol | null;
 }
 
+/** The side of the market whose liquidity a sweep takes: below a low, or above a high. */
+export type LiquiditySide = "low" | "high";
+
+/** A rejection before the relative DOL is a mere purge; at or after it, a CSD. */
+export type RejectionKind = "purge" | "csd";
+
+export interface LiquidityEvent {
+  side: LiquiditySide;
+  /** The level whose liquidity was taken. */
+  level: number;
+  /** The wick extreme that took it. */
+  extreme: number;
+  /** Whether the same bar's body continued after the purge (a CRT). */
+  isCrt: boolean;
+  /** Classification against the relative DOL, or null when no further pool is known. */
+  kind: RejectionKind | null;
+}
+
 export interface Decision {
   time: number;
   action: "enter" | "exit" | "wait" | "stand-down";
@@ -77,6 +95,7 @@ export interface Decision {
   killzone?: KillzoneName | null;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
+  liquidity?: LiquidityEvent;
 }
 
 export interface Trade {

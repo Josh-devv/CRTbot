@@ -1,4 +1,4 @@
-import type { Bar, Dol, PricePosition, StructureSnapshot } from "./types.js";
+import type { Bar, Dol, LiquiditySide, PricePosition, StructureSnapshot } from "./types.js";
 
 /** A local turning point in price — the raw material of structure. */
 export interface Swing {
@@ -133,6 +133,28 @@ export function classifyPrice(price: number, range: DealingRange): PricePosition
   return "equilibrium";
 }
 
+/** The qualifying pool nearest the reference: the highest of the lows, or the lowest of the highs. */
+export function nearestPool(
+  points: SignificantPoints,
+  side: LiquiditySide,
+  qualifies: (swing: Swing) => boolean,
+): Swing | null {
+  const pools = (side === "low" ? points.lows : points.highs).filter(qualifies);
+  if (pools.length === 0) return null;
+  return pools.reduce((a, b) => ((side === "low" ? b.price > a.price : b.price < a.price) ? b : a));
+}
+
+/** The qualifying pool furthest from the reference: the deepest low, or the highest high. */
+export function extremePool(
+  points: SignificantPoints,
+  side: LiquiditySide,
+  qualifies: (swing: Swing) => boolean,
+): Swing | null {
+  const pools = (side === "low" ? points.lows : points.highs).filter(qualifies);
+  if (pools.length === 0) return null;
+  return pools.reduce((a, b) => ((side === "low" ? b.price < a.price : b.price > a.price) ? b : a));
+}
+
 /**
  * Price is drawn toward liquidity: up out of discount, down out of premium. The
  * short-term DOL is the nearest opposing significant point; the long-term DOL is
@@ -145,13 +167,13 @@ export function drawOnLiquidity(
   uptoIndex = Number.POSITIVE_INFINITY,
 ): Dol | null {
   const drawingUp = price <= range.equilibrium;
-  const pools = (drawingUp ? points.highs : points.lows).filter(
-    (point) => point.index <= uptoIndex && (drawingUp ? point.price > price : point.price < price),
-  );
-  if (pools.length === 0) return null;
+  const side: LiquiditySide = drawingUp ? "high" : "low";
+  const qualifies = (swing: Swing): boolean =>
+    swing.index <= uptoIndex && (drawingUp ? swing.price > price : swing.price < price);
 
-  const nearest = pools.reduce((a, b) => (drawingUp ? b.price < a.price : b.price > a.price) ? b : a);
-  const extreme = pools.reduce((a, b) => (drawingUp ? b.price > a.price : b.price < a.price) ? b : a);
+  const nearest = nearestPool(points, side, qualifies);
+  const extreme = extremePool(points, side, qualifies);
+  if (nearest === null || extreme === null) return null;
 
   return { shortTerm: nearest.price, longTerm: extreme.price };
 }

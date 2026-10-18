@@ -91,6 +91,11 @@ _Avoid_: —
 Liquidity inside the dealing range versus liquidity at its extremes.
 _Avoid_: Inner/outer liquidity
 
+**Rejection**:
+A wick that drives into a level and closes back on the side it came from. A rejection
+before the relative DOL is reached is a liquidity purge; at or after it, a CSD.
+_Avoid_: Fakeout, wick rejection
+
 ### Mechanics
 
 **CRT (Candle Range Theory)**:

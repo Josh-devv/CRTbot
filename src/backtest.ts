@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { bucketStart } from "./candles.js";
+import { liquidityEventAt } from "./liquidity.js";
 import { computeStats } from "./stats.js";
 import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
 import { placeholderLong, type Strategy, type StrategyContext } from "./strategy.js";
@@ -52,12 +53,13 @@ function contextOf(
   index: number,
   points: SignificantPoints,
   cfg: StrategyConfig,
-): Pick<Decision, "session" | "killzone" | "bucket" | "structure"> {
+): Pick<Decision, "session" | "killzone" | "bucket" | "structure" | "liquidity"> {
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
+    liquidity: liquidityEventAt(bar, index, points) ?? undefined,
   };
 }
 
