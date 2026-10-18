@@ -60,6 +60,34 @@ function reached(bar: Bar, pending: Pending): boolean {
   return pending.direction === "long" ? bar.low <= pending.entry : bar.high >= pending.entry;
 }
 
+/** Size a position so that being stopped out loses `riskPerTradePct` of equity. */
+function sizeFor(
+  equity: number,
+  cfg: StrategyConfig,
+  entry: number,
+  stop: number,
+): { size: number; riskAmount: number } {
+  const riskPerUnit = Math.abs(entry - stop);
+  const riskAmount = equity * cfg.risk.riskPerTradePct;
+  return { size: riskPerUnit === 0 ? 0 : riskAmount / riskPerUnit, riskAmount };
+}
+
+/**
+ * Realise a trade on the bar that hit its stop or target. Costs are charged on the way out
+ * as they were on the way in — half the spread plus slippage — and commission is charged per
+ * side, so twice over the round trip. The stop and target themselves are never modified.
+ */
+function realise(trade: Trade, bar: Bar, hit: "target" | "stop", cfg: StrategyConfig): void {
+  const rawExit = hit === "target" ? trade.targetPrice : trade.stopPrice;
+  const dir = trade.direction === "long" ? 1 : -1;
+  const fill = rawExit - dir * (cfg.costs.spread / 2 + cfg.costs.slippage);
+  const pnl = (fill - trade.entryPrice) * trade.size * dir - 2 * cfg.costs.commission;
+  trade.exitTime = bar.time;
+  trade.exitPrice = fill;
+  trade.pnl = pnl;
+  trade.rMultiple = trade.riskAmount === 0 ? 0 : pnl / trade.riskAmount;
+}
+
 export interface BacktestOptions {
   strategy?: Strategy;
 }
@@ -98,9 +126,6 @@ export function runBacktest(
   options: BacktestOptions = {},
 ): BacktestResult {
   const strategy = options.strategy ?? placeholderLong(cfg);
-  const halfSpread = cfg.costs.spread / 2;
-  const slip = cfg.costs.slippage;
-  const killzonesOnly = cfg.risk.killzonesOnly ?? false;
   const points = findSignificantPoints(series.bars, cfg.structure);
 
   // Group blocks by the candle that engulfs them, so each decision can name the blocks
@@ -133,21 +158,8 @@ export function runBacktest(
     if (openTrade !== null) {
       const hit = checkExit(openTrade, bar);
       if (hit !== null) {
-        const rawExit = hit === "target" ? openTrade.targetPrice : openTrade.stopPrice;
-        // Costs are charged on both sides: half the spread and slippage on the way out,
-        // and commission per side (so twice over the round trip).
-        const fill =
-          openTrade.direction === "long"
-            ? rawExit - halfSpread - slip
-            : rawExit + halfSpread + slip;
-        const dir = openTrade.direction === "long" ? 1 : -1;
-        const commission = 2 * cfg.costs.commission;
-        const pnl = (fill - openTrade.entryPrice) * openTrade.size * dir - commission;
-        openTrade.exitTime = bar.time;
-        openTrade.exitPrice = fill;
-        openTrade.pnl = pnl;
-        openTrade.rMultiple = openTrade.riskAmount === 0 ? 0 : pnl / openTrade.riskAmount;
-        equity += pnl;
+        realise(openTrade, bar, hit, cfg);
+        equity += openTrade.pnl!;
         equityCurve.push({ time: bar.time, equity });
         trades.push(openTrade);
         decisions.push({
@@ -165,10 +177,8 @@ export function runBacktest(
     // 2) Fill a resting limit order.
     if (openTrade === null && pending !== null && reached(bar, pending)) {
       const dir = pending.direction === "long" ? 1 : -1;
-      const fill = pending.entry + dir * (halfSpread + slip);
-      const riskPerUnit = Math.abs(fill - pending.stop);
-      const riskAmount = equity * cfg.risk.riskPerTradePct;
-      const size = riskPerUnit === 0 ? 0 : riskAmount / riskPerUnit;
+      const fill = pending.entry + dir * (cfg.costs.spread / 2 + cfg.costs.slippage);
+      const { size, riskAmount } = sizeFor(equity, cfg, fill, pending.stop);
 
       const trade: Trade = {
         instrument: series.instrument,
@@ -194,15 +204,8 @@ export function runBacktest(
       // Same bar may already have run to the stop or target; stop is assumed first.
       const sameBar = checkExit(trade, bar);
       if (sameBar !== null) {
-        const rawExit = sameBar === "target" ? trade.targetPrice : trade.stopPrice;
-        const exitFill = trade.direction === "long" ? rawExit - halfSpread - slip : rawExit + halfSpread + slip;
-        const sdir = trade.direction === "long" ? 1 : -1;
-        const pnl = (exitFill - trade.entryPrice) * trade.size * sdir - 2 * cfg.costs.commission;
-        trade.exitTime = bar.time;
-        trade.exitPrice = exitFill;
-        trade.pnl = pnl;
-        trade.rMultiple = trade.riskAmount === 0 ? 0 : pnl / trade.riskAmount;
-        equity += pnl;
+        realise(trade, bar, sameBar, cfg);
+        equity += trade.pnl!;
         equityCurve.push({ time: bar.time, equity });
         trades.push(trade);
         decisions.push({
@@ -255,24 +258,16 @@ export function runBacktest(
       };
 
       const outcome = strategy.decide(ctx);
-      let spoke = false;
+      let answered = false;
 
       if (outcome !== null && "direction" in outcome) {
-        spoke = true;
+        answered = true;
         const signal = outcome as Signal;
         if (tradesToday >= cfg.risk.maxTradesPerDay) {
           decisions.push({
             time: bar.time,
             action: "wait",
             reason: "maximum trades per day reached",
-            direction: signal.direction,
-            ...context,
-          });
-        } else if (killzonesOnly && ctx.killzone === null) {
-          decisions.push({
-            time: bar.time,
-            action: "wait",
-            reason: "outside a killzone",
             direction: signal.direction,
             ...context,
           });
@@ -283,7 +278,8 @@ export function runBacktest(
             direction: signal.direction,
             entry: signal.entry,
             stop: signal.stop,
-            target: signal.target ?? signal.entry + dir * cfg.risk.rMultiple * risk,
+            // Placement is mechanical: the take profit is always `rMultiple` x risk (§5.3).
+            target: signal.entry + dir * cfg.risk.rMultiple * risk,
             reason: signal.reason,
             day,
           };
@@ -295,21 +291,19 @@ export function runBacktest(
             ...context,
           });
         } else {
-          // Legacy market entry (no planned prices): enter at the bar close.
+          // Market entry for strategies that plan no prices (the walking skeleton): enter at
+          // the bar close, with a fixed stop distance and the fixed R multiple.
           const dir = signal.direction === "long" ? 1 : -1;
-          const entryPrice = bar.close + dir * (halfSpread + slip);
+          const entryPrice = bar.close + dir * (cfg.costs.spread / 2 + cfg.costs.slippage);
           const stopPrice = entryPrice - dir * cfg.strategy.stopDistance;
-          const targetPrice = entryPrice + dir * cfg.risk.rMultiple * cfg.strategy.stopDistance;
-          const riskPerUnit = Math.abs(entryPrice - stopPrice);
-          const riskAmount = equity * cfg.risk.riskPerTradePct;
-          const size = riskPerUnit === 0 ? 0 : riskAmount / riskPerUnit;
+          const { size, riskAmount } = sizeFor(equity, cfg, entryPrice, stopPrice);
           openTrade = {
             instrument: series.instrument,
             direction: signal.direction,
             entryTime: bar.time,
             entryPrice,
             stopPrice,
-            targetPrice,
+            targetPrice: entryPrice + dir * cfg.risk.rMultiple * cfg.strategy.stopDistance,
             size,
             riskAmount,
             reason: signal.reason,
@@ -324,12 +318,12 @@ export function runBacktest(
           });
         }
       } else if (outcome !== null) {
-        spoke = true;
+        answered = true;
         decisions.push({ time: bar.time, action: "wait", reason: outcome.reason, ...context });
       }
 
-      // Nothing was taken and the strategy said nothing: record why.
-      if (!spoke) {
+      // Flat, no resting order, and the strategy said nothing: record that there was nothing.
+      if (!answered) {
         decisions.push({
           time: bar.time,
           action: "wait",

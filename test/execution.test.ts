@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { runBacktest } from "../src/backtest.js";
 import { axisSystem } from "../src/execution.js";
 import { DEFAULT_SESSION_CONFIG } from "../src/time.js";
-import type { Strategy } from "../src/strategy.js";
 import type { Bar, BarSeries, StrategyConfig } from "../src/types.js";
 
 /** 2021-01-04 07:00 UTC = 02:00 America/New_York — inside the London killzone. */
@@ -37,7 +36,7 @@ function cfg(overrides: Partial<StrategyConfig> = {}): StrategyConfig {
     session: DEFAULT_SESSION_CONFIG,
     structure: { swingWidth: 1 },
     strategy: { stopDistance: 0.001 },
-    risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01, killzonesOnly: true },
+    risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01 },
     costs: { spread: 0, commission: 0, slippage: 0 },
     initialEquity: 10000,
     ...overrides,
@@ -67,7 +66,7 @@ const CRT: [number, number, number, number][] = [
 ];
 
 test("a crafted CRT scenario produces exactly one trade at the block open and extreme", () => {
-  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem(cfg()) });
+  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem() });
 
   assert.equal(result.trades.length, 1, "exactly one trade");
   const trade = result.trades[0]!;
@@ -81,7 +80,7 @@ test("a crafted CRT scenario produces exactly one trade at the block open and ex
 });
 
 test("the take profit is always exactly 3R and the stop is never moved", () => {
-  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem(cfg()) });
+  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem() });
   const trade = result.trades[0]!;
 
   const entry = 9.5;
@@ -94,7 +93,7 @@ test("the take profit is always exactly 3R and the stop is never moved", () => {
 });
 
 test("no trade is taken outside a killzone, and the reason is logged", () => {
-  const result = runBacktest(series(OUTSIDE, CRT), cfg(), { strategy: axisSystem(cfg()) });
+  const result = runBacktest(series(OUTSIDE, CRT), cfg(), { strategy: axisSystem() });
 
   assert.equal(result.trades.length, 0, "no trade outside a killzone");
   assert.ok(
@@ -115,7 +114,7 @@ test("at most one trade is entered per day", () => {
     [11.1, 12.0, 11.05, 11.9],
   ];
 
-  const result = runBacktest(series(KILLZONE, rows), cfg(), { strategy: axisSystem(cfg()) });
+  const result = runBacktest(series(KILLZONE, rows), cfg(), { strategy: axisSystem() });
 
   assert.equal(result.trades.length, 1, "only the first setup is taken");
   assert.ok(
@@ -123,26 +122,5 @@ test("at most one trade is entered per day", () => {
       (d) => d.action === "wait" && /maximum trades per day/i.test(d.reason),
     ),
     "the second setup is refused for the daily cap",
-  );
-});
-
-test("the engine itself refuses a setup outside a killzone when configured to", () => {
-  // A strategy that ignores killzones and always proposes a priced entry.
-  const eager: Strategy = {
-    name: "eager",
-    decide: (ctx) => ({
-      direction: "long",
-      reason: "eager",
-      entry: ctx.close,
-      stop: ctx.close - 0.001,
-    }),
-  };
-
-  const result = runBacktest(series(OUTSIDE, CRT), cfg(), { strategy: eager });
-
-  assert.equal(result.trades.length, 0);
-  assert.ok(
-    result.decisions.some((d) => d.action === "wait" && /outside a killzone/i.test(d.reason)),
-    "the engine blocks the trade and says why",
   );
 });

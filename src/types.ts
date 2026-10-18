@@ -47,8 +47,7 @@ export interface StrategyConfig {
   /** Structural significance tuning. */
   structure?: { swingWidth: number };
   strategy: { stopDistance: number };
-  /** Risk rules. `killzonesOnly` defaults to false; the Axis System config enables it. */
-  risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number; killzonesOnly?: boolean };
+  risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
   costs: { spread: number; commission: number; slippage: number };
   initialEquity: number;
 }

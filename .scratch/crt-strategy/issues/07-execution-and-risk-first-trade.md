@@ -19,17 +19,24 @@ Landed in `src/execution.ts` (`axisSystem`), with the engine reworked in `src/ba
 the strategy contract widened in `src/strategy.ts`.
 
 **Strategy contract.** `StrategyResult = Signal | Wait | null`. `Signal` gained optional
-`entry`/`stop`/`target`: when a strategy supplies them the engine rests a limit order at
-`entry`; when it does not, the walking-skeleton path (market entry at the bar close, stop from
+`entry`/`stop`: when a strategy supplies them the engine rests a limit order at `entry`; when it
+does not, the walking-skeleton path (market entry at the bar close, stop from
 `strategy.stopDistance`, target at `risk.rMultiple`) is preserved. `Wait` carries a reason that
 the engine writes to the decisions log. `StrategyContext` now exposes `session`, `killzone`,
 `structure`, `liquidity`, `orderBlocks` and the day-rollover state.
 
-**Execution (`axisSystem`).** Rejects when outside a killzone ("outside a killzone"), when no
-order block was confirmed, and on a degenerate zero-risk block. It prefers the block carrying
-the `purge` behaviour — the CRT — and otherwise takes the first confirmed block. Placement:
-`entry = block.open`, `stop = long ? block.bottom : block.top`, `target = entry ± rMultiple ×
-risk` (§5.3).
+The take profit is **never** passed in as a signal field — the engine always derives it as
+`entry ± rMultiple × risk`, so the fixed-3R invariant (ADR-0003, spec line 143) cannot be
+bypassed by a strategy.
+
+**Execution (`axisSystem`).** Declines outside a killzone ("outside a killzone"), when no order
+block was confirmed, and on a degenerate zero-risk block. It prefers the block carrying the
+`purge` behaviour — the CRT — and otherwise takes the first confirmed block. Placement:
+`entry = block.open`, `stop = long ? block.bottom : block.top`; the engine then adds the fixed
+3R target (§5.3). The killzone rule lives in the strategy, not the engine: it is a setup-selection
+rule, while the engine owns only the trade-record invariants (the daily cap, and SL/TP never
+moving).
+
 
 **Pending limit orders.** A priced signal arms a resting order keyed to the session day; it
 fills when a later bar trades to the entry (`low <= entry` for a long, `high >= entry` for a
@@ -38,14 +45,14 @@ before target (conservative — intrabar order is unknown). Unfilled setups expi
 rollover and log "setup expired with the day"; the daily trade counter resets on the session day,
 not UTC midnight.
 
-**Killzone gate.** `risk.killzonesOnly` (default `false`, so the skeleton suites stay green)
-makes the engine refuse any priced signal placed outside a killzone. The CLI sets it `true`.
+**Killzone gating.** Enforced by `axisSystem` via `ctx.killzone`. An engine-level
+`risk.killzonesOnly` flag was prototyped during review and removed: it defaulted to `false`
+(weakening a rule the spec states unconditionally) and duplicated the strategy's own check.
 
-**Tests** (`test/execution.test.ts`, 5): a crafted CRT fixture (bearish purge at index 7
+**Tests** (`test/execution.test.ts`, 4): a crafted CRT fixture (bearish purge at index 7
 sweeping the significant low 8.8, engulfed by index 8 → block open 9.5 / extreme 8.7, retrace to
 9.5 at index 9, target 11.9 hit at index 12) covers AC1/AC2/AC5; a non-killzone run covers AC4;
-a second same-day setup covers AC3; a fifth test drives the engine gate directly with a
-killzone-blind strategy.
+a second same-day setup covers AC3.
 
 ## Follow-ups
 

@@ -29,7 +29,7 @@ export interface StrategyContext {
 }
 
 export interface Signal {
-  direction: "long" | "short";
+  direction: Direction;
   reason: string;
   /**
    * Limit entry — the order-block open. When omitted the engine enters at market on the
@@ -38,8 +38,6 @@ export interface Signal {
   entry?: number;
   /** Protective stop — the order-block extreme. */
   stop?: number;
-  /** Take-profit override; the engine otherwise uses a fixed R multiple. */
-  target?: number;
 }
 
 /** A deliberate no-trade: recorded in the decisions log with its reason. */
