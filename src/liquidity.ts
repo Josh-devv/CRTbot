@@ -47,6 +47,13 @@ function purgesAt(bar: Bar, index: number, points: SignificantPoints): PurgeEven
       extreme: level.side === "low" ? bar.low : bar.high,
     });
   }
+
+  // Deterministic order so a caller can take the first sweep as "the" event: nearest
+  // level first (the highest low, the lowest high), and low-side sweeps before high-side.
+  purges.sort((a, b) => {
+    if (a.side !== b.side) return a.side === "low" ? -1 : 1;
+    return a.side === "low" ? b.level - a.level : a.level - b.level;
+  });
   return purges;
 }
 
@@ -105,9 +112,8 @@ export function liquidityEventAt(
   index: number,
   points: SignificantPoints,
 ): LiquidityEvent | null {
-  // A bar can sweep several levels at once; the event records the first significant
-  // level swept (low-side levels are considered before high-side ones). `findPurges`
-  // reports every sweep, so nothing is lost for analysis.
+  // A bar can sweep several levels at once; the event records the nearest sweep (see
+  // `purgesAt` ordering). `findPurges` reports every sweep, so nothing is lost for analysis.
   const purge = purgesAt(bar, index, points)[0];
   if (purge === undefined) return null;
 
