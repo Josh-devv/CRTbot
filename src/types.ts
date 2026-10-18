@@ -86,6 +86,37 @@ export interface LiquidityEvent {
   kind: RejectionKind | null;
 }
 
+/** The qualifying behaviour an order block's candle shows (ruleset §6). */
+export type ObBehaviour = "purge" | "fill" | "generate";
+
+export interface OrderBlock {
+  /** Index of the last candle in the block. */
+  index: number;
+  time: number;
+  direction: Direction;
+  /** Price zone of the block after body-vs-wick resolution. */
+  top: number;
+  bottom: number;
+  /** Whether the zone is the candle body or the whole candle (wick). */
+  part: "body" | "wick";
+  behaviours: ObBehaviour[];
+  /** Index of the candle that engulfed the block. */
+  engulfedBy: number;
+  /** Number of consecutive candles in the block; 1 for a single candle. */
+  candles: number;
+  /** Formed by testing a previous order block. */
+  propulsion: boolean;
+}
+
+/** The four high-probability conditions (ruleset §6), all required. */
+export interface OrderBlockScore {
+  highProbability: boolean;
+  biasAligned: boolean;
+  discountOrPremium: boolean;
+  formedAtKeyTime: boolean;
+  testedAtKeyTime: boolean;
+}
+
 export interface Decision {
   time: number;
   action: "enter" | "exit" | "wait" | "stand-down";
@@ -96,6 +127,7 @@ export interface Decision {
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;
+  orderBlocks?: OrderBlock[];
 }
 
 export interface Trade {

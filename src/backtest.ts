@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { bucketStart } from "./candles.js";
 import { liquidityEventAt } from "./liquidity.js";
+import { findOrderBlocks } from "./orderblocks.js";
 import { computeStats } from "./stats.js";
 import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
 import { placeholderLong, type Strategy, type StrategyContext } from "./strategy.js";
@@ -12,6 +13,7 @@ import type {
   BarSeries,
   Decision,
   EquityPoint,
+  OrderBlock,
   StrategyConfig,
   Trade,
 } from "./types.js";
@@ -53,13 +55,15 @@ function contextOf(
   index: number,
   points: SignificantPoints,
   cfg: StrategyConfig,
-): Pick<Decision, "session" | "killzone" | "bucket" | "structure" | "liquidity"> {
+  orderBlocks: OrderBlock[],
+): Pick<Decision, "session" | "killzone" | "bucket" | "structure" | "liquidity" | "orderBlocks"> {
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
     liquidity: liquidityEventAt(bar, index, points) ?? undefined,
+    orderBlocks: orderBlocks.length > 0 ? orderBlocks : undefined,
   };
 }
 
@@ -76,6 +80,16 @@ export function runBacktest(
   const halfSpread = cfg.costs.spread / 2;
   const slip = cfg.costs.slippage;
   const points = findSignificantPoints(series.bars, cfg.structure);
+
+  // Group blocks by the candle that engulfs them, so each decision can name the blocks
+  // confirmed on that bar.
+  const blocksByEngulfing = new Map<number, OrderBlock[]>();
+  for (const block of findOrderBlocks(series.bars, { points })) {
+    const existing = blocksByEngulfing.get(block.engulfedBy);
+    if (existing === undefined) blocksByEngulfing.set(block.engulfedBy, [block]);
+    else existing.push(block);
+  }
+
 
   const trades: Trade[] = [];
   const decisions: Decision[] = [];
@@ -117,7 +131,7 @@ export function runBacktest(
           action: "exit",
           direction: openTrade.direction,
           reason: `${hit} hit`,
-          ...contextOf(bar, i, points, cfg),
+          ...contextOf(bar, i, points, cfg, blocksByEngulfing.get(i) ?? []),
         });
         openTrade = null;
         continue; // one action per bar
@@ -172,7 +186,7 @@ export function runBacktest(
           action: "enter",
           direction: signal.direction,
           reason: signal.reason,
-          ...contextOf(bar, i, points, cfg),
+          ...contextOf(bar, i, points, cfg, blocksByEngulfing.get(i) ?? []),
         });
       }
     }
