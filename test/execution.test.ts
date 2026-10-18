@@ -1,0 +1,148 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { runBacktest } from "../src/backtest.js";
+import { axisSystem } from "../src/execution.js";
+import { DEFAULT_SESSION_CONFIG } from "../src/time.js";
+import type { Strategy } from "../src/strategy.js";
+import type { Bar, BarSeries, StrategyConfig } from "../src/types.js";
+
+/** 2021-01-04 07:00 UTC = 02:00 America/New_York — inside the London killzone. */
+const KILLZONE = Date.UTC(2021, 0, 4, 7, 0, 0);
+/** 2021-01-04 17:00 UTC = 12:00 America/New_York — outside every killzone. */
+const OUTSIDE = Date.UTC(2021, 0, 4, 17, 0, 0);
+const MIN = 60 * 1000;
+
+function approx(actual: number, expected: number, message?: string, eps = 1e-9): void {
+  assert.ok(
+    Math.abs(actual - expected) < eps,
+    `${message ?? "expected approx"}: got ${actual}, expected ${expected}`,
+  );
+}
+
+function series(start: number, rows: [number, number, number, number][]): BarSeries {
+  const bars: Bar[] = rows.map(([open, high, low, close], i) => ({
+    time: start + i * MIN,
+    open,
+    high,
+    low,
+    close,
+  }));
+  return { instrument: "GBPUSD", bars };
+}
+
+function cfg(overrides: Partial<StrategyConfig> = {}): StrategyConfig {
+  return {
+    instrument: "GBPUSD",
+    session: DEFAULT_SESSION_CONFIG,
+    structure: { swingWidth: 1 },
+    strategy: { stopDistance: 0.001 },
+    risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01, killzonesOnly: true },
+    costs: { spread: 0, commission: 0, slippage: 0 },
+    initialEquity: 10000,
+    ...overrides,
+  };
+}
+
+/**
+ * A bearish candle (index 7) purges the significant low at index 4 and is engulfed by the
+ * bullish candle at index 8 → a bullish order block with open 9.5 and extreme 8.7.
+ * The bar at index 9 retraces to the block open (9.5) and the bar at index 12 reaches the
+ * fixed 3R target (11.9).
+ */
+const CRT: [number, number, number, number][] = [
+  [10.0, 10.2, 9.6, 9.8],
+  [9.8, 9.9, 9.0, 9.1], // swing low 9.0
+  [9.1, 9.5, 9.2, 9.4],
+  [9.4, 9.6, 9.3, 9.5],
+  [9.5, 9.7, 8.8, 9.6], // swing low 8.8 → significant
+  [9.6, 9.9, 9.3, 9.7],
+  [9.8, 9.9, 9.2, 9.3], // not engulfed: body top too high for the block close
+  [9.5, 9.6, 8.7, 8.9], // purges 8.8, closes back above → the order block
+  [9.6, 9.9, 9.55, 9.8], // engulfs the block (close above the wick)
+  [9.8, 9.9, 9.5, 9.8], // retrace to the block open → fill
+  [9.8, 10.5, 9.8, 10.4],
+  [10.4, 11.2, 10.4, 11.1],
+  [11.1, 12.0, 11.0, 11.9], // reaches the 3R target
+];
+
+test("a crafted CRT scenario produces exactly one trade at the block open and extreme", () => {
+  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem(cfg()) });
+
+  assert.equal(result.trades.length, 1, "exactly one trade");
+  const trade = result.trades[0]!;
+
+  assert.equal(trade.direction, "long");
+  assert.equal(trade.entryPrice, 9.5, "entry is the order-block open");
+  assert.equal(trade.stopPrice, 8.7, "stop is the order-block extreme");
+  assert.ok(Math.abs(trade.targetPrice - 11.9) < 1e-9, "target is a fixed 3R from entry");
+  assert.ok(Math.abs(trade.exitPrice! - 11.9) < 1e-9, "the target was hit");
+  assert.ok(Math.abs(trade.rMultiple! - 3) < 1e-9, "the result was 3R");
+});
+
+test("the take profit is always exactly 3R and the stop is never moved", () => {
+  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem(cfg()) });
+  const trade = result.trades[0]!;
+
+  const entry = 9.5;
+  const stop = 8.7;
+  const reward = trade.targetPrice - entry;
+  const risk = entry - stop;
+  assert.ok(Math.abs(reward - 3 * risk) < 1e-9, "reward is exactly 3x risk");
+  assert.equal(trade.stopPrice, stop, "the stop is still the order-block extreme at exit");
+  assert.ok(Math.abs(trade.targetPrice - (entry + 3 * risk)) < 1e-9, "the target was never modified");
+});
+
+test("no trade is taken outside a killzone, and the reason is logged", () => {
+  const result = runBacktest(series(OUTSIDE, CRT), cfg(), { strategy: axisSystem(cfg()) });
+
+  assert.equal(result.trades.length, 0, "no trade outside a killzone");
+  assert.ok(
+    result.decisions.some((d) => d.action === "wait" && /killzone/i.test(d.reason)),
+    "the decisions log states the killzone rejection",
+  );
+});
+
+test("at most one trade is entered per day", () => {
+  // The CRT scenario, then a second setup on the same day that must be refused.
+  const rows: [number, number, number, number][] = [
+    ...CRT,
+    [11.9, 12.0, 11.0, 11.1],
+    [11.1, 11.2, 10.0, 10.1],
+    [10.1, 10.2, 8.6, 8.8], // bearish, purges the significant low 8.7
+    [8.8, 11.8, 8.75, 11.7], // engulfing → a second order block the same day
+    [11.7, 11.8, 11.0, 11.1],
+    [11.1, 12.0, 11.05, 11.9],
+  ];
+
+  const result = runBacktest(series(KILLZONE, rows), cfg(), { strategy: axisSystem(cfg()) });
+
+  assert.equal(result.trades.length, 1, "only the first setup is taken");
+  assert.ok(
+    result.decisions.some(
+      (d) => d.action === "wait" && /maximum trades per day/i.test(d.reason),
+    ),
+    "the second setup is refused for the daily cap",
+  );
+});
+
+test("the engine itself refuses a setup outside a killzone when configured to", () => {
+  // A strategy that ignores killzones and always proposes a priced entry.
+  const eager: Strategy = {
+    name: "eager",
+    decide: (ctx) => ({
+      direction: "long",
+      reason: "eager",
+      entry: ctx.close,
+      stop: ctx.close - 0.001,
+    }),
+  };
+
+  const result = runBacktest(series(OUTSIDE, CRT), cfg(), { strategy: eager });
+
+  assert.equal(result.trades.length, 0);
+  assert.ok(
+    result.decisions.some((d) => d.action === "wait" && /outside a killzone/i.test(d.reason)),
+    "the engine blocks the trade and says why",
+  );
+});

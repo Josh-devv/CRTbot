@@ -182,6 +182,7 @@ export function findOrderBlocks(bars: Bar[], rules: OrderBlockRules): OrderBlock
       index: i - 1,
       time: bars[i - 1]!.time,
       direction,
+      open: bars[i - 1]!.open,
       top: zone.top,
       bottom: zone.bottom,
       part: zone.part,

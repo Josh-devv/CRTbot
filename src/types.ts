@@ -47,7 +47,8 @@ export interface StrategyConfig {
   /** Structural significance tuning. */
   structure?: { swingWidth: number };
   strategy: { stopDistance: number };
-  risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
+  /** Risk rules. `killzonesOnly` defaults to false; the Axis System config enables it. */
+  risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number; killzonesOnly?: boolean };
   costs: { spread: number; commission: number; slippage: number };
   initialEquity: number;
 }
@@ -94,6 +95,8 @@ export interface OrderBlock {
   index: number;
   time: number;
   direction: Direction;
+  /** The block's open — the entry price when the block is traded (§5.3). */
+  open: number;
   /** Price zone of the block after body-vs-wick resolution. */
   top: number;
   bottom: number;

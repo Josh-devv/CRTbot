@@ -1,5 +1,15 @@
-import type { StrategyConfig, Trade } from "./types.js";
+import type {
+  Direction,
+  KillzoneName,
+  LiquidityEvent,
+  OrderBlock,
+  SessionName,
+  StrategyConfig,
+  StructureSnapshot,
+  Trade,
+} from "./types.js";
 
+/** Everything the strategy can see at the current bar. */
 export interface StrategyContext {
   index: number;
   time: number;
@@ -10,16 +20,39 @@ export interface StrategyContext {
   openTrade: Trade | null;
   tradesToday: number;
   isNewDay: boolean;
+  session: SessionName;
+  killzone: KillzoneName | null;
+  structure: StructureSnapshot | null;
+  liquidity: LiquidityEvent | null;
+  /** Order blocks confirmed on this bar. */
+  orderBlocks: OrderBlock[];
 }
 
 export interface Signal {
   direction: "long" | "short";
   reason: string;
+  /**
+   * Limit entry — the order-block open. When omitted the engine enters at market on the
+   * signal bar (used by the walking-skeleton tests).
+   */
+  entry?: number;
+  /** Protective stop — the order-block extreme. */
+  stop?: number;
+  /** Take-profit override; the engine otherwise uses a fixed R multiple. */
+  target?: number;
 }
+
+/** A deliberate no-trade: recorded in the decisions log with its reason. */
+export interface Wait {
+  reason: string;
+}
+
+/** A strategy either proposes a trade, declines with a reason, or says nothing. */
+export type StrategyResult = Signal | Wait | null;
 
 export interface Strategy {
   readonly name: string;
-  decide(ctx: StrategyContext): Signal | null;
+  decide(ctx: StrategyContext): StrategyResult;
 }
 
 /**

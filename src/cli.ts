@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 
 import { runBacktest } from "./backtest.js";
+import { axisSystem } from "./execution.js";
 import { DEFAULT_SESSION_CONFIG } from "./time.js";
 import type { BacktestResult, Bar, BarSeries, StrategyConfig } from "./types.js";
 
@@ -32,8 +33,9 @@ function demoConfig(): StrategyConfig {
   return {
     instrument: "GBPUSD",
     session: DEFAULT_SESSION_CONFIG,
+    structure: { swingWidth: 2 },
     strategy: { stopDistance: 0.001 },
-    risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01 },
+    risk: { rMultiple: 3, maxTradesPerDay: 1, riskPerTradePct: 0.01, killzonesOnly: true },
     costs: { spread: 0.0001, commission: 0, slippage: 0 },
     initialEquity: 10000,
   };
@@ -58,7 +60,7 @@ function formatReport(result: BacktestResult, bars: number): string {
 function runBacktestCommand(rest: string[]): number {
   const series = syntheticSeries();
   const config = demoConfig();
-  const result = runBacktest(series, config);
+  const result = runBacktest(series, config, { strategy: axisSystem(config) });
 
   console.log(formatReport(result, series.bars.length));
 

@@ -122,6 +122,7 @@ test("high-probability scoring requires all four conditions", () => {
     index: 10,
     time: BASE,
     direction: "long",
+    open: 10,
     top: 10,
     bottom: 9.5,
     part: "body",
