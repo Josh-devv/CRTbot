@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { bucketStart } from "./candles.js";
 import { biasSnapshot } from "./bias.js";
+import { contextSnapshot } from "./context.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { findOrderBlocks } from "./orderblocks.js";
 import { computeStats } from "./stats.js";
@@ -13,6 +14,7 @@ import type {
   Bar,
   BarSeries,
   BiasDirection,
+  ContextSnapshot,
   Decision,
   Direction,
   EquityPoint,
@@ -104,14 +106,23 @@ function contextOf(
   cfg: StrategyConfig,
   orderBlocks: OrderBlock[],
   bias: BiasDirection,
+  context: ContextSnapshot | null,
 ): Pick<
   Decision,
-  "session" | "killzone" | "bias" | "bucket" | "structure" | "liquidity" | "orderBlocks"
+  | "session"
+  | "killzone"
+  | "bias"
+  | "context"
+  | "bucket"
+  | "structure"
+  | "liquidity"
+  | "orderBlocks"
 > {
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
     bias,
+    context: context ?? undefined,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
     liquidity: liquidityEventAt(bar, index, points) ?? undefined,
@@ -171,7 +182,8 @@ export function runBacktest(
     }
 
     const blocksHere = blocksByEngulfing.get(i) ?? [];
-    const context = contextOf(bar, i, points, cfg, blocksHere, biasToday);
+    const ctxContext = contextSnapshot(series.bars, i, cfg, biasToday);
+    const context = contextOf(bar, i, points, cfg, blocksHere, biasToday, ctxContext);
 
     // 1) Manage an open trade against this bar.
     if (openTrade !== null) {
@@ -266,6 +278,7 @@ export function runBacktest(
         session: context.session!,
         killzone: context.killzone ?? null,
         bias: biasToday,
+        context: ctxContext,
         structure: context.structure ?? null,
         liquidity: context.liquidity ?? null,
         orderBlocks: blocksByEngulfing.get(i) ?? [],

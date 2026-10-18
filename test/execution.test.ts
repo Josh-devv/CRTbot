@@ -5,7 +5,7 @@ import { runBacktest } from "../src/backtest.js";
 import { axisSystem } from "../src/execution.js";
 import { DEFAULT_SESSION_CONFIG } from "../src/time.js";
 import type { StrategyContext } from "../src/strategy.js";
-import type { Bar, BarSeries, OrderBlock, StrategyConfig } from "../src/types.js";
+import type { Bar, BarSeries, ContextSnapshot, OrderBlock, StrategyConfig } from "../src/types.js";
 
 /** 2021-01-04 07:00 UTC = 02:00 America/New_York — inside the London killzone. */
 const KILLZONE = Date.UTC(2021, 0, 4, 7, 0, 0);
@@ -136,21 +136,23 @@ test("the day's bias is visible on every decision", () => {
   );
 });
 
-test("axisSystem refuses a setup that opposes the day's bias", () => {
-  const block: OrderBlock = {
-    index: 1,
-    time: KILLZONE,
-    direction: "long",
-    open: 9.5,
-    top: 9.6,
-    bottom: 8.7,
-    part: "wick",
-    behaviours: ["purge"],
-    engulfedBy: 1,
-    candles: 1,
-    propulsion: false,
-  };
-  const context = (bias: "bullish" | "bearish" | "none"): StrategyContext => ({
+/** The bullish order block the decision-level tests hand to `axisSystem` directly. */
+const BLOCK: OrderBlock = {
+  index: 1,
+  time: KILLZONE,
+  direction: "long",
+  open: 9.5,
+  top: 9.6,
+  bottom: 8.7,
+  part: "wick",
+  behaviours: ["purge"],
+  engulfedBy: 1,
+  candles: 1,
+  propulsion: false,
+};
+
+function strategyContext(overrides: Partial<StrategyContext> = {}): StrategyContext {
+  return {
     index: 1,
     time: KILLZONE,
     open: 9.5,
@@ -162,17 +164,52 @@ test("axisSystem refuses a setup that opposes the day's bias", () => {
     isNewDay: true,
     session: "london",
     killzone: "london",
-    bias,
+    bias: "bullish",
+    context: null,
     structure: null,
     liquidity: null,
-    orderBlocks: [block],
-  });
+    orderBlocks: [BLOCK],
+    ...overrides,
+  };
+}
 
-  const refused = axisSystem().decide(context("bearish"));
+function contextSnapshot(
+  position: ContextSnapshot["position"],
+  aligned: boolean,
+): ContextSnapshot {
+  return {
+    timeframe: "H4",
+    range: { high: 10, low: 9, equilibrium: 9.5 },
+    position,
+    keyLevel: position === "discount" ? 9 : 10,
+    crt: null,
+    aligned,
+  };
+}
+
+test("axisSystem refuses a setup that opposes the day's bias", () => {
+  const refused = axisSystem().decide(strategyContext({ bias: "bearish" }));
   assert.ok(refused !== null && !("direction" in refused), "a long against a bearish bias is refused");
   assert.match(refused.reason, /bias/i, "the reason names the bias");
 
-  const allowed = axisSystem().decide(context("none"));
+  const allowed = axisSystem().decide(strategyContext({ bias: "none" }));
   assert.ok(allowed !== null && "direction" in allowed, "a neutral bias does not veto");
   assert.equal(allowed.direction, "long");
+});
+
+test("axisSystem stands down when the dealing range is not aligned with the bias", () => {
+  const misaligned = axisSystem().decide(
+    strategyContext({ context: contextSnapshot("premium", false) }),
+  );
+  assert.equal(misaligned?.reason, "not aligned with the dealing range");
+
+  const aligned = axisSystem().decide(
+    strategyContext({ context: contextSnapshot("discount", true) }),
+  );
+  assert.ok(aligned !== null && "direction" in aligned, "a bullish setup in discount is taken");
+  assert.equal(aligned.direction, "long");
+
+  const noContext = axisSystem().decide(strategyContext());
+  assert.ok(noContext !== null && "direction" in noContext, "before London the context cannot veto");
+  assert.equal(noContext.direction, "long");
 });

@@ -1,4 +1,5 @@
 import { biasVetoes } from "./bias.js";
+import { contextVetoes } from "./context.js";
 import type { StrategyResult, Strategy, StrategyContext } from "./strategy.js";
 import type { OrderBlock } from "./types.js";
 
@@ -25,7 +26,8 @@ export function axisSystem(): Strategy {
         ctx.orderBlocks[0];
       if (block === undefined) return { reason: "no order block confirmed" };
 
-      const veto = biasVetoes(ctx.bias, block.direction);
+      // The bias first, then the map it is executed against (§4.2).
+      const veto = biasVetoes(ctx.bias, block.direction) ?? contextVetoes(ctx.context);
       if (veto !== null) return { reason: veto };
 
       const entry = block.open;

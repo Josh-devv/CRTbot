@@ -65,8 +65,15 @@ export interface Dol {
 }
 
 /** The structural read at a point in time, as recorded on a decision. */
+/** A dealing range as recorded on a snapshot: the framing prices and their midpoint. */
+export interface RangeView {
+  high: number;
+  low: number;
+  equilibrium: number;
+}
+
 export interface StructureSnapshot {
-  range: { high: number; low: number; equilibrium: number };
+  range: RangeView;
   position: PricePosition;
   dol: Dol | null;
 }
@@ -86,6 +93,22 @@ export interface LiquidityEvent {
   isCrt: boolean;
   /** Classification against the relative DOL, or null when no further pool is known. */
   kind: RejectionKind | null;
+}
+
+/**
+ * The H4 context map (ruleset §4): the dealing range aligned to the HTF bias, with the key
+ * level and the CRT inside it.
+ */
+export interface ContextSnapshot {
+  timeframe: "H4";
+  range: RangeView;
+  position: PricePosition;
+  /** The level within the range the bias trades off: the discount low, or the premium high. */
+  keyLevel: number;
+  /** The CRT formed inside the dealing range on the current H4 candle, if any. */
+  crt: LiquidityEvent | null;
+  /** True when the premium/discount location agrees with the bias direction. */
+  aligned: boolean;
 }
 
 /** The qualifying behaviour an order block's candle shows (ruleset §6). */
@@ -130,6 +153,8 @@ export interface Decision {
   killzone?: KillzoneName | null;
   /** The directional bias governing the day. */
   bias?: BiasDirection;
+  /** The H4 context map the bias is executed against. */
+  context?: ContextSnapshot;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;

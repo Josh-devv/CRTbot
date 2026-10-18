@@ -1,5 +1,6 @@
 import type {
   BiasDirection,
+  ContextSnapshot,
   Direction,
   KillzoneName,
   LiquidityEvent,
@@ -25,6 +26,8 @@ export interface StrategyContext {
   killzone: KillzoneName | null;
   /** The directional bias governing the session day. */
   bias: BiasDirection;
+  /** The H4 context map (dealing range, key level, CRT), or null before the London open. */
+  context: ContextSnapshot | null;
   structure: StructureSnapshot | null;
   liquidity: LiquidityEvent | null;
   /** Order blocks confirmed on this bar. */

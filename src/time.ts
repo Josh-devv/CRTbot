@@ -93,6 +93,29 @@ export function sessionDayStart(ms: number, cfg: SessionConfig): number {
   return boundary.toMillis();
 }
 
+/**
+ * Epoch ms at which a named session's window opens on the session day containing `ms`.
+ *
+ * A window that starts at or after the day boundary (e.g. Asia at 18:00) begins on the
+ * boundary's own calendar date; one that starts before it (e.g. London at 02:00) begins on the
+ * next calendar date. Resolved in tz, so it is DST-correct.
+ */
+export function sessionWindowStart(
+  ms: number,
+  name: Exclude<SessionName, "other">,
+  cfg: SessionConfig,
+): number {
+  const start = parseClock(cfg.sessions[name].start);
+  const boundary = cfg.dayBoundary.hour * 60 + cfg.dayBoundary.minute;
+  const boundaryDay = DateTime.fromMillis(sessionDayStart(ms, cfg), { zone: cfg.tz });
+  const date = start >= boundary ? boundaryDay : boundaryDay.plus({ days: 1 });
+
+  return date
+    .startOf("day")
+    .set({ hour: Math.floor(start / 60), minute: start % 60, second: 0, millisecond: 0 })
+    .toMillis();
+}
+
 /** Epoch ms of the FX week start (Sunday at the day boundary) at or before `ms`. */
 export function weekStart(ms: number, cfg: SessionConfig): number {
   let start = sessionDayStart(ms, cfg);
