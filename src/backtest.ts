@@ -3,13 +3,14 @@ import { createHash } from "node:crypto";
 import { bucketStart } from "./candles.js";
 import { biasSnapshot } from "./bias.js";
 import { contextSnapshot } from "./context.js";
+import { dayStandDown, exceptionsInPlay, foldDay, type DayFacts } from "./exceptions.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { findOrderBlocks } from "./orderblocks.js";
 import { correlatedPair, smtDivergence } from "./smt.js";
 import { computeStats } from "./stats.js";
 import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
 import { placeholderLong, type Signal, type Strategy, type StrategyContext } from "./strategy.js";
-import { isKeyMacro, killzoneOf, sessionDayStart, sessionOf } from "./time.js";
+import { isKeyMacro, isNewsDay, killzoneOf, sessionDayStart, sessionOf } from "./time.js";
 import type {
   BacktestResult,
   Bar,
@@ -19,6 +20,7 @@ import type {
   Decision,
   Direction,
   EquityPoint,
+  ExceptionProtocol,
   LiquidityEvent,
   OrderBlock,
   SmtDivergence,
@@ -119,6 +121,8 @@ function decisionReads(input: {
   context: ContextSnapshot | null;
   smt: SmtDivergence | null;
   sweep: LiquidityEvent | null;
+  exceptions: ExceptionProtocol[];
+  newsDay: boolean;
 }): Pick<
   Decision,
   | "session"
@@ -126,18 +130,23 @@ function decisionReads(input: {
   | "bias"
   | "context"
   | "smt"
+  | "exceptions"
+  | "newsDay"
   | "bucket"
   | "structure"
   | "liquidity"
   | "orderBlocks"
 > {
-  const { bar, index, cfg, points, orderBlocks, bias, context, smt, sweep } = input;
+  const { bar, index, cfg, points, orderBlocks, bias, context, smt, sweep, exceptions, newsDay } =
+    input;
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
     bias,
     context: context ?? undefined,
     smt: smt ?? undefined,
+    exceptions: exceptions.length > 0 ? exceptions : undefined,
+    newsDay: newsDay || undefined,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
     liquidity: sweep ?? undefined,
@@ -226,18 +235,31 @@ export function runBacktest(
   let tradesToday = 0;
   let biasToday: BiasDirection = "none";
 
+  // The exception protocols are anticipation for the day ahead (§8), so they are read from the
+  // days already behind us plus the day being built — never from bars that have not printed.
+  const completedDays: DayFacts[] = [];
+  let today: DayFacts | null = null;
+  let stoodDownDay = Number.NaN;
+
   for (let i = 0; i < series.bars.length; i++) {
     const bar = series.bars[i]!;
 
-    // Session-day rollover: the counter resets and the day's bias is read fresh, from
-    // structure up to and including this bar only.
+    // Session-day rollover: the counter resets and the day's bias is read fresh, from structure
+    // up to and including this bar only.
     const day = sessionDayStart(bar.time, cfg.session);
     const isNewDay = i === 0 || sessionDayStart(series.bars[i - 1]!.time, cfg.session) !== day;
     if (day !== currentDay) {
       currentDay = day;
       tradesToday = 0;
       biasToday = biasSnapshot(series.bars.slice(0, i + 1), cfg).direction;
+      if (today !== null) completedDays.push(today);
+      today = null;
     }
+    today = foldDay(today, bar, cfg);
+
+    const inPlay = exceptionsInPlay({ completedDays, today, cfg });
+    const newsDay = isNewsDay(bar.time, cfg.session);
+    const dayPlan = dayStandDown({ exceptions: inPlay, newsDay, cfg });
 
     const blocksHere = blocksByEngulfing.get(i) ?? [];
     const sweep = liquidityEventAt(bar, i, points);
@@ -263,6 +285,8 @@ export function runBacktest(
       context: ctxContext,
       smt,
       sweep,
+      exceptions: inPlay.map((exception) => exception.protocol),
+      newsDay,
     });
 
     // 1) Manage an open trade against this bar.
@@ -285,7 +309,24 @@ export function runBacktest(
       }
     }
 
-    // 2) Fill a resting limit order.
+    // 2) An exception protocol (§8) or a news day (§9) skips the day entirely: any setup still
+    // resting is dropped so it cannot fill, the skip is logged once, and no setup is even asked
+    // for. An open trade is still managed above.
+    if (dayPlan.standDown) {
+      pending = null;
+      if (stoodDownDay !== day) {
+        stoodDownDay = day;
+        decisions.push({
+          time: bar.time,
+          action: "stand-down",
+          reason: dayPlan.reasons.join("; "),
+          ...context,
+        });
+      }
+      continue;
+    }
+
+    // 3) Fill a resting limit order.
     if (openTrade === null && pending !== null && reached(bar, pending)) {
       const dir = pending.direction === "long" ? 1 : -1;
       const fill = pending.entry + dir * (cfg.costs.spread / 2 + cfg.costs.slippage);
@@ -332,7 +373,7 @@ export function runBacktest(
       continue;
     }
 
-    // 3) An unfilled setup expires with its day.
+    // 4) An unfilled setup expires with its day.
     if (pending !== null && pending.day !== day) {
       decisions.push({
         time: bar.time,
@@ -343,7 +384,7 @@ export function runBacktest(
       pending = null;
     }
 
-    // 4) Ask the strategy for a setup.
+    // 5) Ask the strategy for a setup.
     if (openTrade === null && pending === null) {
       const ctx: StrategyContext = {
         index: i,

@@ -80,6 +80,14 @@ export function isNewsDay(ms: number, cfg: SessionConfig): boolean {
   return cfg.newsDays.includes(dayKey(ms, cfg));
 }
 
+/**
+ * The weekday of the session day containing `ms`, in the session timezone: 1 Monday to 7 Sunday
+ * (Luxon's numbering).
+ */
+export function weekdayOf(ms: number, cfg: SessionConfig): number {
+  return DateTime.fromMillis(sessionDayStart(ms, cfg), { zone: cfg.tz }).weekday;
+}
+
 /** Epoch ms of the session-day boundary at or before `ms`. */
 export function sessionDayStart(ms: number, cfg: SessionConfig): number {
   const dt = DateTime.fromMillis(ms, { zone: cfg.tz });

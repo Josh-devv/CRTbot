@@ -58,6 +58,29 @@ export interface SmtConfig {
   useDxy: boolean;
 }
 
+/**
+ * One of the three recognised exception protocols (§8): a day whose bias is unreliable, where
+ * Sham's action is to skip the day entirely.
+ */
+export type ExceptionProtocol = "four-day" | "weekly-profile" | "asian-range";
+
+/** Which exception protocols are enforced as a stand-down, on top of being detected (§8). */
+export interface ExceptionConfig {
+  /** Four consecutive days one way — the next day tends to counter (§8.1). */
+  fourDay: boolean;
+  /** Late week with the expansion already delivered — TGIF (§8.2). */
+  weeklyProfile: boolean;
+  /** The Asian range expanded early — London and New York tend to counter (§8.3). */
+  asianRange: boolean;
+  /** How many times its recent average an Asian range counts as expanded. */
+  asianRangeFactor?: number;
+}
+
+/** Whether a configured news day is skipped (§9). The dates live in `SessionConfig.newsDays`. */
+export interface NewsConfig {
+  standDown: boolean;
+}
+
 export interface Bar {
   /** Epoch milliseconds, UTC. */
   time: number;
@@ -80,6 +103,10 @@ export interface StrategyConfig {
   strategy: { stopDistance: number };
   /** Correlated-instrument divergence (§7.3). Absent means disabled. */
   smt?: SmtConfig;
+  /** Exception protocols that stand the day down (§8). Absent enforces all three. */
+  exceptions?: ExceptionConfig;
+  /** News-day stand-down (§9). Absent enforces it whenever `session.newsDays` lists the day. */
+  news?: NewsConfig;
   risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
   costs: { spread: number; commission: number; slippage: number };
   initialEquity: number;
@@ -187,6 +214,10 @@ export interface Decision {
   context?: ContextSnapshot;
   /** SMT divergence against the correlated instrument, when one is flagged (§7.3). */
   smt?: SmtDivergence;
+  /** The exception protocols detected for this session day (§8), when any are in play. */
+  exceptions?: ExceptionProtocol[];
+  /** Set when this session day is one of the configured news days (§9). */
+  newsDay?: boolean;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;
