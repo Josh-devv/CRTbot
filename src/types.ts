@@ -8,6 +8,9 @@ export type SessionName = "asia" | "london" | "newYork" | "other";
 
 export type KillzoneName = "london" | "newYork";
 
+/** The directional-bias read: which way price is delivering, or `"none"` when it is unclear. */
+export type BiasDirection = "bullish" | "bearish" | "none";
+
 /** A clock window as "HH:mm", interpreted in the session timezone. */
 export interface Window {
   start: string;
@@ -70,7 +73,6 @@ export interface StructureSnapshot {
 
 /** The side of the market whose liquidity a sweep takes: below a low, or above a high. */
 export type LiquiditySide = "low" | "high";
-
 /** A rejection before the relative DOL is a mere purge; at or after it, a CSD. */
 export type RejectionKind = "purge" | "csd";
 
@@ -126,6 +128,8 @@ export interface Decision {
   reason: string;
   session?: SessionName;
   killzone?: KillzoneName | null;
+  /** The directional bias governing the day. */
+  bias?: BiasDirection;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;

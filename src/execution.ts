@@ -1,3 +1,4 @@
+import { biasVetoes } from "./bias.js";
 import type { StrategyResult, Strategy, StrategyContext } from "./strategy.js";
 import type { OrderBlock } from "./types.js";
 
@@ -6,7 +7,8 @@ import type { OrderBlock } from "./types.js";
  *
  * Trigger + confirmation: an order block confirmed on this bar — the CRT purge being the
  * primary qualifying behaviour. Placement: entry at the block's open, stop at the block's
- * extreme, take profit a fixed 3R away (§5.3). Setups are only proposed inside a killzone.
+ * extreme, take profit a fixed 3R away (§5.3). Setups are only proposed inside a killzone, and
+ * never against the day's directional bias.
  *
  * The engine carries out the rest of the risk rules: at most one trade a day, and never
  * moving the stop or target.
@@ -22,6 +24,9 @@ export function axisSystem(): Strategy {
         ctx.orderBlocks.find((candidate) => candidate.behaviours.includes("purge")) ??
         ctx.orderBlocks[0];
       if (block === undefined) return { reason: "no order block confirmed" };
+
+      const veto = biasVetoes(ctx.bias, block.direction);
+      if (veto !== null) return { reason: veto };
 
       const entry = block.open;
       const stop = block.direction === "long" ? block.bottom : block.top;

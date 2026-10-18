@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { runBacktest } from "../src/backtest.js";
 import { axisSystem } from "../src/execution.js";
 import { DEFAULT_SESSION_CONFIG } from "../src/time.js";
-import type { Bar, BarSeries, StrategyConfig } from "../src/types.js";
+import type { StrategyContext } from "../src/strategy.js";
+import type { Bar, BarSeries, OrderBlock, StrategyConfig } from "../src/types.js";
 
 /** 2021-01-04 07:00 UTC = 02:00 America/New_York — inside the London killzone. */
 const KILLZONE = Date.UTC(2021, 0, 4, 7, 0, 0);
@@ -123,4 +124,55 @@ test("at most one trade is entered per day", () => {
     ),
     "the second setup is refused for the daily cap",
   );
+});
+
+test("the day's bias is visible on every decision", () => {
+  const result = runBacktest(series(KILLZONE, CRT), cfg(), { strategy: axisSystem() });
+
+  assert.ok(result.decisions.length > 0, "a decisions log is produced");
+  assert.ok(
+    result.decisions.every((d) => d.bias !== undefined),
+    "each decision carries the bias governing that session day",
+  );
+});
+
+test("axisSystem refuses a setup that opposes the day's bias", () => {
+  const block: OrderBlock = {
+    index: 1,
+    time: KILLZONE,
+    direction: "long",
+    open: 9.5,
+    top: 9.6,
+    bottom: 8.7,
+    part: "wick",
+    behaviours: ["purge"],
+    engulfedBy: 1,
+    candles: 1,
+    propulsion: false,
+  };
+  const context = (bias: "bullish" | "bearish" | "none"): StrategyContext => ({
+    index: 1,
+    time: KILLZONE,
+    open: 9.5,
+    high: 9.9,
+    low: 8.7,
+    close: 9.8,
+    openTrade: null,
+    tradesToday: 0,
+    isNewDay: true,
+    session: "london",
+    killzone: "london",
+    bias,
+    structure: null,
+    liquidity: null,
+    orderBlocks: [block],
+  });
+
+  const refused = axisSystem().decide(context("bearish"));
+  assert.ok(refused !== null && !("direction" in refused), "a long against a bearish bias is refused");
+  assert.match(refused.reason, /bias/i, "the reason names the bias");
+
+  const allowed = axisSystem().decide(context("none"));
+  assert.ok(allowed !== null && "direction" in allowed, "a neutral bias does not veto");
+  assert.equal(allowed.direction, "long");
 });

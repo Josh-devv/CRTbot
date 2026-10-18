@@ -1,4 +1,5 @@
 import type {
+  BiasDirection,
   Direction,
   KillzoneName,
   LiquidityEvent,
@@ -22,6 +23,8 @@ export interface StrategyContext {
   isNewDay: boolean;
   session: SessionName;
   killzone: KillzoneName | null;
+  /** The directional bias governing the session day. */
+  bias: BiasDirection;
   structure: StructureSnapshot | null;
   liquidity: LiquidityEvent | null;
   /** Order blocks confirmed on this bar. */

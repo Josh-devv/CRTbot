@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { bucketStart } from "./candles.js";
+import { biasSnapshot } from "./bias.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { findOrderBlocks } from "./orderblocks.js";
 import { computeStats } from "./stats.js";
@@ -11,6 +12,7 @@ import type {
   BacktestResult,
   Bar,
   BarSeries,
+  BiasDirection,
   Decision,
   Direction,
   EquityPoint,
@@ -101,10 +103,15 @@ function contextOf(
   points: SignificantPoints,
   cfg: StrategyConfig,
   orderBlocks: OrderBlock[],
-): Pick<Decision, "session" | "killzone" | "bucket" | "structure" | "liquidity" | "orderBlocks"> {
+  bias: BiasDirection,
+): Pick<
+  Decision,
+  "session" | "killzone" | "bias" | "bucket" | "structure" | "liquidity" | "orderBlocks"
+> {
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
+    bias,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
     liquidity: liquidityEventAt(bar, index, points) ?? undefined,
@@ -148,11 +155,23 @@ export function runBacktest(
   let pending: Pending | null = null;
   let currentDay = Number.NaN;
   let tradesToday = 0;
+  let biasToday: BiasDirection = "none";
 
   for (let i = 0; i < series.bars.length; i++) {
     const bar = series.bars[i]!;
+
+    // Session-day rollover: the counter resets and the day's bias is read fresh, from
+    // structure up to and including this bar only.
+    const day = sessionDayStart(bar.time, cfg.session);
+    const isNewDay = i === 0 || sessionDayStart(series.bars[i - 1]!.time, cfg.session) !== day;
+    if (day !== currentDay) {
+      currentDay = day;
+      tradesToday = 0;
+      biasToday = biasSnapshot(series.bars.slice(0, i + 1), cfg).direction;
+    }
+
     const blocksHere = blocksByEngulfing.get(i) ?? [];
-    const context = contextOf(bar, i, points, cfg, blocksHere);
+    const context = contextOf(bar, i, points, cfg, blocksHere, biasToday);
 
     // 1) Manage an open trade against this bar.
     if (openTrade !== null) {
@@ -221,13 +240,7 @@ export function runBacktest(
       continue;
     }
 
-    // 3) Session-day rollover bookkeeping; an unfilled setup expires with its day.
-    const day = sessionDayStart(bar.time, cfg.session);
-    const isNewDay = i === 0 || sessionDayStart(series.bars[i - 1]!.time, cfg.session) !== day;
-    if (day !== currentDay) {
-      currentDay = day;
-      tradesToday = 0;
-    }
+    // 3) An unfilled setup expires with its day.
     if (pending !== null && pending.day !== day) {
       decisions.push({
         time: bar.time,
@@ -252,6 +265,7 @@ export function runBacktest(
         isNewDay,
         session: context.session!,
         killzone: context.killzone ?? null,
+        bias: biasToday,
         structure: context.structure ?? null,
         liquidity: context.liquidity ?? null,
         orderBlocks: blocksByEngulfing.get(i) ?? [],
