@@ -2,7 +2,7 @@ import { aggregate } from "./candles.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { classifyPrice, dealingRange, findSignificantPoints, type DealingRange } from "./structure.js";
 import { sessionWindowStart } from "./time.js";
-import type { Bar, BiasDirection, ContextSnapshot, StrategyConfig } from "./types.js";
+import type { Bar, BiasDirection, ContextSnapshot, SmtDivergence, StrategyConfig } from "./types.js";
 
 /** Context is the H4 layer (ruleset §4). */
 export const CONTEXT_TIMEFRAME = "H4";
@@ -16,9 +16,19 @@ function withinRange(level: number, range: DealingRange): boolean {
  * The context veto: with a bias in play the map must place price in the half the bias trades
  * from — a bullish bias in discount, a bearish one in premium (§4.2). No context — before the
  * London open — vetoes nothing (§4.4: wait, do nothing until then).
+ *
+ * The one reprieve is a *confirmed* SMT divergence (§7.3): the pair taking liquidity that the
+ * correlated instrument failed to take is itself the evidence that this level is the one being
+ * worked, so a confirmed divergence stands in for the premium/discount location. Divergence on
+ * its own never does — an unconfirmed one leaves the veto standing.
  */
-export function contextVetoes(context: ContextSnapshot | null): string | null {
-  return context === null || context.aligned ? null : "not aligned with the dealing range";
+export function contextVetoes(
+  context: ContextSnapshot | null,
+  smt: SmtDivergence | null = null,
+): string | null {
+  if (context === null || context.aligned) return null;
+  if (smt !== null && smt.confirmedBy !== null) return null;
+  return "not aligned with the dealing range";
 }
 
 /**

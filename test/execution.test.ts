@@ -5,7 +5,7 @@ import { runBacktest } from "../src/backtest.js";
 import { axisSystem } from "../src/execution.js";
 import { DEFAULT_SESSION_CONFIG } from "../src/time.js";
 import type { StrategyContext } from "../src/strategy.js";
-import type { Bar, BarSeries, ContextSnapshot, OrderBlock, StrategyConfig } from "../src/types.js";
+import type { Bar, BarSeries, ContextSnapshot, OrderBlock, SmtDivergence, StrategyConfig } from "../src/types.js";
 
 /** 2021-01-04 07:00 UTC = 02:00 America/New_York — inside the London killzone. */
 const KILLZONE = Date.UTC(2021, 0, 4, 7, 0, 0);
@@ -166,6 +166,7 @@ function strategyContext(overrides: Partial<StrategyContext> = {}): StrategyCont
     killzone: "london",
     bias: "bullish",
     context: null,
+    smt: null,
     structure: null,
     liquidity: null,
     orderBlocks: [BLOCK],
@@ -212,4 +213,43 @@ test("axisSystem stands down when the dealing range is not aligned with the bias
   const noContext = axisSystem().decide(strategyContext());
   assert.ok(noContext !== null && "direction" in noContext, "before London the context cannot veto");
   assert.equal(noContext.direction, "long");
+});
+
+/** The divergence at the key level, confirmed or not (§7.3). */
+function divergence(confirmedBy: SmtDivergence["confirmedBy"]): SmtDivergence {
+  return { side: "low", took: "GBPUSD", failed: "EURUSD", confirmedBy };
+}
+
+test("an unconfirmed SMT divergence does not stand in for the map", () => {
+  const refused = axisSystem().decide(
+    strategyContext({
+      context: contextSnapshot("premium", false),
+      smt: divergence(null),
+    }),
+  );
+
+  assert.ok(refused !== null && !("direction" in refused), "the setup is still refused");
+  assert.equal(refused.reason, "not aligned with the dealing range");
+});
+
+test("a confirmed SMT divergence stands in for the map", () => {
+  const taken = axisSystem().decide(
+    strategyContext({
+      context: contextSnapshot("premium", false),
+      smt: divergence("csd"),
+    }),
+  );
+
+  assert.ok(taken !== null && "direction" in taken, "the setup is taken");
+  assert.equal(taken.direction, "long");
+  assert.match(taken.reason, /SMT divergence confirmed by a csd/i);
+});
+
+test("a divergence does not overrule the day's bias", () => {
+  const refused = axisSystem().decide(
+    strategyContext({ bias: "bearish", smt: divergence("csd") }),
+  );
+
+  assert.ok(refused !== null && !("direction" in refused), "a long against a bearish bias is refused");
+  assert.match(refused.reason, /bias/i);
 });

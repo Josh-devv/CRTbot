@@ -5,10 +5,11 @@ import { biasSnapshot } from "./bias.js";
 import { contextSnapshot } from "./context.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { findOrderBlocks } from "./orderblocks.js";
+import { correlatedPair, smtDivergence } from "./smt.js";
 import { computeStats } from "./stats.js";
 import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
 import { placeholderLong, type Signal, type Strategy, type StrategyContext } from "./strategy.js";
-import { killzoneOf, sessionDayStart, sessionOf } from "./time.js";
+import { isKeyMacro, killzoneOf, sessionDayStart, sessionOf } from "./time.js";
 import type {
   BacktestResult,
   Bar,
@@ -18,7 +19,9 @@ import type {
   Decision,
   Direction,
   EquityPoint,
+  LiquidityEvent,
   OrderBlock,
+  SmtDivergence,
   StrategyConfig,
   Trade,
 } from "./types.js";
@@ -94,40 +97,89 @@ function realise(trade: Trade, bar: Bar, hit: "target" | "stop", cfg: StrategyCo
 
 export interface BacktestOptions {
   strategy?: Strategy;
+  /**
+   * The rest of the multi-instrument dataset — the correlated instruments SMT is measured
+   * against (§7.3). Bars are matched to the traded series by time; an instrument with no bar
+   * at a given time simply produces no divergence there.
+   */
+  dataset?: BarSeries[];
 }
 
 /** The Axis System fixes execution at M15, so every decision names its M15 candle bucket. */
 const EXECUTION_TIMEFRAME = "M15";
 
-function contextOf(
-  bar: Bar,
-  index: number,
-  points: SignificantPoints,
-  cfg: StrategyConfig,
-  orderBlocks: OrderBlock[],
-  bias: BiasDirection,
-  context: ContextSnapshot | null,
-): Pick<
+/** The per-bar reads every decision in the log carries, assembled once per bar. */
+function decisionReads(input: {
+  bar: Bar;
+  index: number;
+  points: SignificantPoints;
+  cfg: StrategyConfig;
+  orderBlocks: OrderBlock[];
+  bias: BiasDirection;
+  context: ContextSnapshot | null;
+  smt: SmtDivergence | null;
+  sweep: LiquidityEvent | null;
+}): Pick<
   Decision,
   | "session"
   | "killzone"
   | "bias"
   | "context"
+  | "smt"
   | "bucket"
   | "structure"
   | "liquidity"
   | "orderBlocks"
 > {
+  const { bar, index, cfg, points, orderBlocks, bias, context, smt, sweep } = input;
   return {
     session: sessionOf(bar.time, cfg.session),
     killzone: killzoneOf(bar.time, cfg.session),
     bias,
     context: context ?? undefined,
+    smt: smt ?? undefined,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
-    liquidity: liquidityEventAt(bar, index, points) ?? undefined,
+    liquidity: sweep ?? undefined,
     orderBlocks: orderBlocks.length > 0 ? orderBlocks : undefined,
   };
+}
+
+/**
+ * SMT for one bar (§7.3). The two lower-timeframe confirmations are read off this bar: a sweep
+ * classified as a CSD, or an order block confirmed here. Either validates a divergence; neither
+ * means the divergence is flagged but unconfirmed — and unconfirmed divergence never trades.
+ */
+function detectSmt(input: {
+  bar: Bar;
+  cfg: StrategyConfig;
+  series: BarSeries;
+  pairSeries: BarSeries | null;
+  pairIndexByTime: Map<number, number>;
+  context: ContextSnapshot | null;
+  sweep: LiquidityEvent | null;
+  blocksHere: OrderBlock[];
+  bias: BiasDirection;
+}): SmtDivergence | null {
+  const { bar, cfg, series, pairSeries, pairIndexByTime, context, sweep, blocksHere, bias } = input;
+  if (pairSeries === null || context === null) return null;
+
+  const { session } = cfg;
+  const confirmedBy: SmtDivergence["confirmedBy"] =
+    sweep?.kind === "csd" ? "csd" : blocksHere.length > 0 ? "order-block" : null;
+
+  return smtDivergence({
+    traded: series.instrument,
+    pair: pairSeries.instrument,
+    sweep,
+    pairBars: pairSeries.bars,
+    pairIndex: pairIndexByTime.get(bar.time) ?? null,
+    bias,
+    keyLevel: context.keyLevel,
+    atKeyTime: killzoneOf(bar.time, session) !== null || isKeyMacro(bar.time, session),
+    confirmedBy,
+    structure: cfg.structure,
+  });
 }
 
 /**
@@ -145,6 +197,12 @@ export function runBacktest(
 ): BacktestResult {
   const strategy = options.strategy ?? placeholderLong(cfg);
   const points = findSignificantPoints(series.bars, cfg.structure);
+
+  // SMT needs the correlated instrument's bars at the same times (§7.3): pair the traded series
+  // with the configured correlation and index its bars by time.
+  const pair = correlatedPair(cfg, series.instrument, options.dataset);
+  const pairSeries = pair?.series ?? null;
+  const pairIndexByTime = pair?.indexByTime ?? new Map<number, number>();
 
   // Group blocks by the candle that engulfs them, so each decision can name the blocks
   // confirmed on that bar.
@@ -182,8 +240,30 @@ export function runBacktest(
     }
 
     const blocksHere = blocksByEngulfing.get(i) ?? [];
+    const sweep = liquidityEventAt(bar, i, points);
     const ctxContext = contextSnapshot(series.bars, i, cfg, biasToday);
-    const context = contextOf(bar, i, points, cfg, blocksHere, biasToday, ctxContext);
+    const smt = detectSmt({
+      bar,
+      cfg,
+      series,
+      pairSeries,
+      pairIndexByTime,
+      context: ctxContext,
+      sweep,
+      blocksHere,
+      bias: biasToday,
+    });
+    const context = decisionReads({
+      bar,
+      index: i,
+      points,
+      cfg,
+      orderBlocks: blocksHere,
+      bias: biasToday,
+      context: ctxContext,
+      smt,
+      sweep,
+    });
 
     // 1) Manage an open trade against this bar.
     if (openTrade !== null) {
@@ -279,8 +359,9 @@ export function runBacktest(
         killzone: context.killzone ?? null,
         bias: biasToday,
         context: ctxContext,
+        smt,
         structure: context.structure ?? null,
-        liquidity: context.liquidity ?? null,
+        liquidity: sweep,
         orderBlocks: blocksByEngulfing.get(i) ?? [],
       };
 

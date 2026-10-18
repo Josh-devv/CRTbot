@@ -6,6 +6,7 @@ import type {
   LiquidityEvent,
   OrderBlock,
   SessionName,
+  SmtDivergence,
   StrategyConfig,
   StructureSnapshot,
   Trade,
@@ -28,6 +29,8 @@ export interface StrategyContext {
   bias: BiasDirection;
   /** The H4 context map (dealing range, key level, CRT), or null before the London open. */
   context: ContextSnapshot | null;
+  /** SMT divergence against the correlated instrument, when one is flagged (§7.3). */
+  smt: SmtDivergence | null;
   structure: StructureSnapshot | null;
   liquidity: LiquidityEvent | null;
   /** Order blocks confirmed on this bar. */

@@ -30,6 +30,34 @@ export interface SessionConfig {
   newsDays: string[];
 }
 
+/**
+ * SMT divergence between correlated instruments (§7.3).
+ *
+ * A divergence is only ever reported when all three criteria held — aligned with the HTF bias,
+ * formed at an HTF key level, formed at a key time — so a flagged divergence is already the
+ * qualified kind. It still does not trade on its own: `confirmedBy` must name the follow-on
+ * valid CSD or valid order block that validates it.
+ */
+export interface SmtDivergence {
+  /** The side whose liquidity was taken. */
+  side: LiquiditySide;
+  /** The instrument that took the liquidity. */
+  took: Instrument;
+  /** The correlated instrument that failed to take it. */
+  failed: Instrument;
+  /** The lower-timeframe confirmation (§7.3), or null while the divergence is unconfirmed. */
+  confirmedBy: "csd" | "order-block" | null;
+}
+
+/** Which instruments count as correlated, and whether DXY is used as the dollar reference. */
+export interface SmtConfig {
+  enabled: boolean;
+  /** Instrument pairs treated as correlated (§7.3). */
+  pairs: [Instrument, Instrument][];
+  /** DXY as a dollar reference — off in v1 (ADR-0001). */
+  useDxy: boolean;
+}
+
 export interface Bar {
   /** Epoch milliseconds, UTC. */
   time: number;
@@ -50,6 +78,8 @@ export interface StrategyConfig {
   /** Structural significance tuning. */
   structure?: { swingWidth: number };
   strategy: { stopDistance: number };
+  /** Correlated-instrument divergence (§7.3). Absent means disabled. */
+  smt?: SmtConfig;
   risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
   costs: { spread: number; commission: number; slippage: number };
   initialEquity: number;
@@ -64,7 +94,6 @@ export interface Dol {
   shortTerm: number;
 }
 
-/** The structural read at a point in time, as recorded on a decision. */
 /** A dealing range as recorded on a snapshot: the framing prices and their midpoint. */
 export interface RangeView {
   high: number;
@@ -72,6 +101,7 @@ export interface RangeView {
   equilibrium: number;
 }
 
+/** The structural read at a point in time, as recorded on a decision. */
 export interface StructureSnapshot {
   range: RangeView;
   position: PricePosition;
@@ -155,6 +185,8 @@ export interface Decision {
   bias?: BiasDirection;
   /** The H4 context map the bias is executed against. */
   context?: ContextSnapshot;
+  /** SMT divergence against the correlated instrument, when one is flagged (§7.3). */
+  smt?: SmtDivergence;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;

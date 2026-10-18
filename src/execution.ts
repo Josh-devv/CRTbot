@@ -1,7 +1,7 @@
 import { biasVetoes } from "./bias.js";
 import { contextVetoes } from "./context.js";
 import type { StrategyResult, Strategy, StrategyContext } from "./strategy.js";
-import type { OrderBlock } from "./types.js";
+import type { OrderBlock, SmtDivergence } from "./types.js";
 
 /**
  * The Axis System execution layer (ruleset §5).
@@ -26,8 +26,10 @@ export function axisSystem(): Strategy {
         ctx.orderBlocks[0];
       if (block === undefined) return { reason: "no order block confirmed" };
 
-      // The bias first, then the map it is executed against (§4.2).
-      const veto = biasVetoes(ctx.bias, block.direction) ?? contextVetoes(ctx.context);
+      // The bias first, then the map it is executed against (§4.2), then the divergence that
+      // can stand in for that map when it is confirmed (§7.3).
+      const veto =
+        biasVetoes(ctx.bias, block.direction) ?? contextVetoes(ctx.context, ctx.smt);
       if (veto !== null) return { reason: veto };
 
       const entry = block.open;
@@ -38,10 +40,17 @@ export function axisSystem(): Strategy {
       // The engine derives the fixed-3R target from these prices (ADR-0003).
       return {
         direction: block.direction,
-        reason: `order block (${block.behaviours.join(" + ")})`,
+        reason: triggerReason(block, ctx.smt),
         entry,
         stop,
       };
     },
   };
+}
+
+/** What got the trade over the line: a confirmed divergence, or the order block alone. */
+function triggerReason(block: OrderBlock, smt: SmtDivergence | null): string {
+  const blockReason = `order block (${block.behaviours.join(" + ")})`;
+  if (smt === null || smt.confirmedBy === null) return blockReason;
+  return `${blockReason}, SMT divergence confirmed by a ${smt.confirmedBy}`;
 }
