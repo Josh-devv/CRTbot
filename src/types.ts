@@ -138,6 +138,26 @@ export interface ExpansionConfig {
   lookbackDays?: number;
 }
 
+/**
+ * The spread assumptions the cost-sensitivity mode reruns a scenario under (spec US30): the mid
+ * case is `Costs.spread` itself, so only the two bounds are configured.
+ */
+export interface SpreadSensitivity {
+  /** The spread to assume when costs are kind. */
+  optimistic: number;
+  /** The spread to assume when costs are unkind. */
+  pessimistic: number;
+}
+
+/** What a fill costs (spec US26): spread and slippage per side, commission charged per side too. */
+export interface Costs {
+  spread: number;
+  commission: number;
+  slippage: number;
+  /** Absent leaves the cost-sensitivity mode with nothing to sweep. */
+  sensitivity?: SpreadSensitivity;
+}
+
 export interface Bar {
   /** Epoch milliseconds, UTC. */
   time: number;
@@ -167,7 +187,7 @@ export interface StrategyConfig {
   /** The expansion-day test (§10). Absent leaves the verdict logged but suppresses nothing. */
   expansionDay?: ExpansionConfig;
   risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
-  costs: { spread: number; commission: number; slippage: number };
+  costs: Costs;
   initialEquity: number;
 }
 
