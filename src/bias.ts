@@ -13,8 +13,8 @@ import type { Bar, BiasDirection, Direction, StrategyConfig } from "./types.js";
  * Each timeframe is read independently, then refined top-down Monthly → Weekly → Daily. The
  * daily read governs the day; a higher timeframe that points the other way vetoes it.
  *
- * Tier B refinements — the Quarterly Shift framework, seasonal tendencies and market profiles
- * (§3.1.1, §3.1.3) — are deliberately absent from v1.
+ * The Quarterly Shift framework and seasonal tendencies (§3.1.1) are read separately — see
+ * `seasonality.ts`; market profiles (§3.1.3) are still deliberately absent from v1.
  */
 export function structuralBias(bars: Bar[], cfg: StrategyConfig): BiasDirection {
   const width = cfg.structure?.swingWidth ?? DEFAULT_SWING_WIDTH;

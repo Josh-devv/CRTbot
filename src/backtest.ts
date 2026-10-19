@@ -1,17 +1,25 @@
 import { createHash } from "node:crypto";
 
-import { bucketStart } from "./candles.js";
+import { aggregate, bucketStart } from "./candles.js";
 import { biasSnapshot } from "./bias.js";
 import { contextSnapshot } from "./context.js";
 import { dayStandDown, exceptionsInPlay, foldDay } from "./exceptions.js";
 import { liquidityEventAt } from "./liquidity.js";
 import { findOrderBlocks } from "./orderblocks.js";
 import { expansionTest } from "./profiles.js";
+import { macroContext } from "./seasonality.js";
 import { correlatedPair, smtDivergence } from "./smt.js";
 import { computeStats } from "./stats.js";
 import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
 import { placeholderLong, type Signal, type Strategy, type StrategyContext } from "./strategy.js";
-import { isKeyMacro, isNewsDay, killzoneOf, sessionDayStart, sessionOf } from "./time.js";
+import {
+  isKeyMacro,
+  isNewsDay,
+  killzoneOf,
+  monthStart,
+  sessionDayStart,
+  sessionOf,
+} from "./time.js";
 import type {
   BacktestResult,
   Bar,
@@ -25,6 +33,7 @@ import type {
   ExceptionProtocol,
   ExpansionTest,
   LiquidityEvent,
+  MacroContext,
   OrderBlock,
   SmtDivergence,
   StrategyConfig,
@@ -127,6 +136,8 @@ function decisionReads(input: {
   exceptions: ExceptionProtocol[];
   newsDay: boolean;
   expansionTest?: ExpansionTest;
+  /** The macro directional context (§3.1.1) for this session day. */
+  macro?: MacroContext;
 }): Pick<
   Decision,
   | "session"
@@ -137,6 +148,7 @@ function decisionReads(input: {
   | "exceptions"
   | "newsDay"
   | "expansionTest"
+  | "macro"
   | "bucket"
   | "structure"
   | "liquidity"
@@ -155,6 +167,7 @@ function decisionReads(input: {
     exceptions,
     newsDay,
     expansionTest,
+    macro,
   } = input;
   return {
     session: sessionOf(bar.time, cfg.session),
@@ -165,6 +178,7 @@ function decisionReads(input: {
     exceptions: exceptions.length > 0 ? exceptions : undefined,
     newsDay: newsDay || undefined,
     expansionTest,
+    macro,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
     structure: structureSnapshot(points, index, bar.close) ?? undefined,
     liquidity: sweep ?? undefined,
@@ -258,6 +272,8 @@ export function runBacktest(
   const completedDays: DayFacts[] = [];
   let today: DayFacts | null = null;
   let stoodDownDay = Number.NaN;
+  let macroMonthStart = Number.NaN;
+  let macroToday: MacroContext | null = null;
 
   for (let i = 0; i < series.bars.length; i++) {
     const bar = series.bars[i]!;
@@ -270,15 +286,29 @@ export function runBacktest(
       currentDay = day;
       tradesToday = 0;
       biasToday = biasSnapshot(series.bars.slice(0, i + 1), cfg).direction;
+      // The macro context is a monthly-level read (§3.1.1): it cannot change until the month does.
+      const month = monthStart(bar.time, cfg.session);
+      if (month !== macroMonthStart) {
+        macroMonthStart = month;
+        const months = aggregate(series.bars.slice(0, i + 1), "MN1", cfg);
+        macroToday = macroContext(months, bar.time, cfg);
+      }
       if (today !== null) completedDays.push(today);
       today = null;
     }
     today = foldDay(today, bar, cfg);
+    const macroRead = macroToday ?? undefined;
 
     const inPlay = exceptionsInPlay({ completedDays, today, cfg });
     const newsDay = isNewsDay(bar.time, cfg.session);
     const expansion = expansionTest({ completedDays, today, cfg });
-    const dayPlan = dayStandDown({ exceptions: inPlay, newsDay, expansionTest: expansion, cfg });
+    const dayPlan = dayStandDown({
+      exceptions: inPlay,
+      newsDay,
+      expansionTest: expansion,
+      macro: macroRead,
+      cfg,
+    });
 
     const blocksHere = blocksByEngulfing.get(i) ?? [];
     const sweep = liquidityEventAt(bar, i, points);
@@ -307,6 +337,7 @@ export function runBacktest(
       exceptions: inPlay.map((exception) => exception.protocol),
       newsDay,
       expansionTest: expansion,
+      macro: macroRead,
     });
 
     // 1) Manage an open trade against this bar.

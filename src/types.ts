@@ -139,6 +139,46 @@ export interface ExpansionConfig {
 }
 
 /**
+ * The macro directional context (§3.1.1): the quarterly shift and the seasonal tendency, which
+ * must agree or the hypothesis is dumped. Absent leaves the read logged but stands nothing down.
+ * Enforcing it with thin history stands down nearly every day until `minYears` is satisfied.
+ */
+export interface MacroConfig {
+  /** Stand the day down while the macro context produces no bias. */
+  enforce: boolean;
+  /** Completed years of a month's own history a tendency needs; §13 wants 20-30. */
+  minYears?: number;
+  /** The share of up months that counts as a tendency, in either direction. */
+  bullishShare?: number;
+}
+
+/** What the calendar month in play has done, over its own history. */
+export interface SeasonalRead {
+  direction: BiasDirection;
+  /** How many of those months closed up. */
+  upMonths: number;
+  /** How many completed months of that calendar month the history holds. */
+  totalMonths: number;
+  reason: string;
+}
+
+/** What the last completed quarter delivered. */
+export interface QuarterlyShift {
+  direction: BiasDirection;
+  /** The quarter that was read, as "Q4 2020". */
+  quarter: string;
+  reason: string;
+}
+
+/** The macro directional context: both readings, and the one they agree on (or none). */
+export interface MacroContext {
+  direction: BiasDirection;
+  seasonal: SeasonalRead;
+  quarterly: QuarterlyShift;
+  reason: string;
+}
+
+/**
  * The spread assumptions the cost-sensitivity mode reruns a scenario under (spec US30): the mid
  * case is `Costs.spread` itself, so only the two bounds are configured.
  */
@@ -186,6 +226,8 @@ export interface StrategyConfig {
   news?: NewsConfig;
   /** The expansion-day test (§10). Absent leaves the verdict logged but suppresses nothing. */
   expansionDay?: ExpansionConfig;
+  /** The macro directional context (§3.1.1, Tier B). Absent leaves the read logged only. */
+  macro?: MacroConfig;
   risk: { rMultiple: number; maxTradesPerDay: number; riskPerTradePct: number };
   costs: Costs;
   initialEquity: number;
@@ -299,6 +341,8 @@ export interface Decision {
   newsDay?: boolean;
   /** The expansion-day verdict for this session day (§10). */
   expansionTest?: ExpansionTest;
+  /** The macro directional context for this session day (§3.1.1, Tier B). */
+  macro?: MacroContext;
   bucket?: { timeframe: Timeframe; time: number };
   structure?: StructureSnapshot;
   liquidity?: LiquidityEvent;

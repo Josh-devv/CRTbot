@@ -6,6 +6,7 @@ import type {
   DayRead,
   ExceptionProtocol,
   ExpansionTest,
+  MacroContext,
   StrategyConfig,
 } from "./types.js";
 
@@ -141,14 +142,17 @@ function newsStandDown(cfg: StrategyConfig): boolean {
 }
 
 /**
- * Whether the day is skipped entirely: an enforced exception protocol (§8), a news day (§9), or
- * an enforced expansion test that did not call today an expansion day (§10).
+ * Whether the day is skipped entirely: an enforced exception protocol (§8), a news day (§9), an
+ * enforced expansion test that did not call today an expansion day (§10), or an enforced macro
+ * context with no bias to trade (§3.1.1).
  */
 export function dayStandDown(input: {
   exceptions: ExceptionInPlay[];
   newsDay: boolean;
   /** The expansion-day verdict (§10), when the test is configured. */
   expansionTest?: ExpansionTest;
+  /** The macro directional context (§3.1.1), when it has been read. */
+  macro?: MacroContext;
   cfg: StrategyConfig;
 }): DayStandDown {
   const reasons = input.exceptions
@@ -160,6 +164,11 @@ export function dayStandDown(input: {
   const expansion = input.expansionTest;
   if (expansion !== undefined && input.cfg.expansionDay?.enforce && !expansion.isExpansionDay) {
     reasons.push(expansion.reason);
+  }
+
+  const macro = input.macro;
+  if (macro !== undefined && input.cfg.macro?.enforce && macro.direction === "none") {
+    reasons.push(`no macro bias: ${macro.reason}`);
   }
 
   return { standDown: reasons.length > 0, reasons };
