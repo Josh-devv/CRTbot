@@ -19,6 +19,8 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "hyparquet": "^1.31.5",
+    "hyparquet-writer": "^0.16.12",
     "luxon": "^3.7.2"
   }
 }

@@ -80,13 +80,13 @@ component; the strategy's judgment calls become explicit parameters instead of h
 
 ### Language & platform
 - **TypeScript (strict) on Node.js v24** (already installed). Hand-rolled bar-replay engine; no third-party backtest framework (their session/multi-timeframe models don't match the Axis System).
-- **Luxon** (MIT) for IANA timezone handling (`America/New_York`), **hyparquet + hyparquet-writer** (MIT) for Parquet, **@duckdb/node-api** (MIT) as the query layer.
+- **Luxon** (MIT) for IANA timezone handling (`America/New_York`), **hyparquet + hyparquet-writer** (MIT) for Parquet. No DuckDB: a range scan through hyparquet is all the loader needs, and it keeps a native dependency out of the tree.
 - Python is **not** used (broken on this machine; see stack research).
 
 ### Data
 - Source: **HistData.com M1** CSV for **GBPUSD and EURUSD**; ingested once, converted to Parquet, never read as CSV in the hot path.
-- Storage layout: `data/parquet/{symbol}/m1/year=YYYY/part.parquet`, columns `(ts_utc, open, high, low, close, volume?)`.
-- Canonical timestamp: **UTC**. Session logic converts to `America/New_York` via Luxon; **no fixed offsets**.
+- Storage layout: `data/parquet/{INSTRUMENT}/{year}.parquet`, columns `(time, open, high, low, close)` — `time` as INT64 UTC milliseconds. Volume is not stored: HistData's FX volume is a tick count, and the seam's `Bar` carries none.
+- Canonical timestamp: **UTC**. HistData's EST-without-DST stamps are shifted the fixed five hours **once, at ingest**; session logic converts UTC to `America/New_York` via Luxon, with **no fixed offsets in the trading logic**.
 - Higher timeframes are **derived by aggregation** from M1 using session-anchored cuts, not stored as separate truths.
 
 ### Modules (deep modules; each hides its internals behind a narrow interface)

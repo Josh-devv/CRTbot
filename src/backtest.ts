@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { aggregate, bucketStart } from "./candles.js";
+import { aggregate, bucketStart, EXECUTION_TIMEFRAME } from "./candles.js";
 import { biasSnapshot } from "./bias.js";
 import { contextSnapshot } from "./context.js";
 import { dayStandDown, exceptionsInPlay, foldDay } from "./exceptions.js";
@@ -52,6 +52,30 @@ function stableStringify(value: unknown): string {
 
 export function configHash(cfg: StrategyConfig): string {
   return createHash("sha256").update(stableStringify(cfg)).digest("hex");
+}
+
+/**
+ * A fingerprint of the bars a run replayed: the traded instrument's series, then any dataset
+ * series given alongside it, each ordered by instrument name. Two runs over the same bars share
+ * it, so a stored result can be tied back to the data behind it (spec §Determinism).
+ */
+export function dataHash(series: BarSeries, dataset: BarSeries[] = []): string {
+  const hash = createHash("sha256");
+  const parts = [series, ...dataset].sort((a, b) => a.instrument.localeCompare(b.instrument));
+  const chunk: string[] = [];
+  for (const part of parts) {
+    hash.update(`${part.instrument}\n`);
+    for (const bar of part.bars) {
+      chunk.push(`${bar.time},${bar.open},${bar.high},${bar.low},${bar.close};\n`);
+      if (chunk.length === 10_000) {
+        hash.update(chunk.join(""));
+        chunk.length = 0;
+      }
+    }
+    hash.update(chunk.join(""));
+    chunk.length = 0;
+  }
+  return hash.digest("hex");
 }
 
 function checkExit(trade: Trade, b: Bar): "target" | "stop" | null {
@@ -118,9 +142,6 @@ export interface BacktestOptions {
    */
   dataset?: BarSeries[];
 }
-
-/** The Axis System fixes execution at M15, so every decision names its M15 candle bucket. */
-const EXECUTION_TIMEFRAME = "M15";
 
 /** The per-bar reads every decision in the log carries, assembled once per bar. */
 function decisionReads(input: {
@@ -540,5 +561,6 @@ export function runBacktest(
     stats: computeStats(trades, equityCurve),
     decisions,
     configHash: configHash(cfg),
+    dataHash: dataHash(series, options.dataset),
   };
 }

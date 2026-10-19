@@ -10,6 +10,9 @@ const SUB_DAY_MINUTES: Record<"M15" | "H4", number> = {
   H4: 4 * (MS_PER_HOUR / MS_PER_MINUTE),
 };
 
+/** The Axis System fixes execution at M15, so every decision names its M15 candle bucket. */
+export const EXECUTION_TIMEFRAME: Timeframe = "M15";
+
 /**
  * Sub-day buckets advance on the wall clock, not on elapsed milliseconds, so
  * the H4 grid stays on 01:00/05:00/09:00 local even across a DST transition

@@ -268,6 +268,8 @@ test("identical input and config produce identical, hash-stable output", () => {
 
   assert.deepEqual(a, b, "runs are deterministic");
   assert.equal(a.configHash, b.configHash, "hash is stable");
+  assert.ok(a.dataHash.length > 0, "a data hash is recorded");
+  assert.equal(a.dataHash, b.dataHash, "the data hash is stable");
 
   const changed = baseConfig();
   changed.risk = { ...changed.risk, riskPerTradePct: 0.02 };
@@ -275,6 +277,15 @@ test("identical input and config produce identical, hash-stable output", () => {
     a.configHash,
     runBacktest(risingSeries(), changed).configHash,
     "hash tracks the config",
+  );
+
+  const touched = risingSeries();
+  touched.bars[0] = bar(T0, 1.1995, 1.2005, 1.199, 1.2);
+  touched.bars[2] = bar(T0 + 2 * M15, 1.2005, 1.204, 1.2, 1.2036);
+  assert.notEqual(
+    a.dataHash,
+    runBacktest(touched, baseConfig()).dataHash,
+    "data hash tracks the bars",
   );
 });
 

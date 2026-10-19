@@ -30,6 +30,8 @@ export interface RunSummary {
   bars: number;
   /** The hash of the config the run was made with. */
   configHash: string;
+  /** The hash of the bars the run replayed. */
+  dataHash: string;
   /** The run's own statistics, before any pooling. */
   stats: Stats;
 }
@@ -184,6 +186,7 @@ export function buildReport(input: {
       instrument: run.instrument,
       bars: run.bars,
       configHash: run.result.configHash,
+      dataHash: run.result.dataHash,
       stats: run.result.stats,
     })),
     bySession: breakdown(trades, (trade) => sessionOf(trade.entryTime, session), SESSION_ORDER),
@@ -327,7 +330,8 @@ export function formatReport(report: Report): string {
     ...report.runs.map(
       (run, index) =>
         `  ${index + 1}. ${run.instrument} ${run.bars} bars, ${run.stats.tradeCount} trades, ` +
-        `expectancyR ${run.stats.expectancyR.toFixed(3)}, config ${run.configHash}`,
+        `expectancyR ${run.stats.expectancyR.toFixed(3)}, config ${run.configHash}, ` +
+        `data ${run.dataHash}`,
     ),
   ];
 

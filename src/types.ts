@@ -385,4 +385,5 @@ export interface BacktestResult {
   stats: Stats;
   decisions: Decision[];
   configHash: string;
+  dataHash: string;
 }
