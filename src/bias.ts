@@ -1,5 +1,5 @@
-import { aggregate } from "./candles.js";
-import { DEFAULT_SWING_WIDTH, findSwings } from "./structure.js";
+import { aggregate, RunningCandles } from "./candles.js";
+import { DEFAULT_SWING_WIDTH, findSwings, type StructureRules } from "./structure.js";
 import type { Bar, BiasDirection, Direction, StrategyConfig } from "./types.js";
 
 /**
@@ -78,6 +78,168 @@ export function biasSnapshot(bars: Bar[], cfg: StrategyConfig): BiasSnapshot {
   const daily = structuralBias(aggregate(bars, "D1", cfg), cfg);
 
   return { direction: resolveBias(daily, weekly, monthly), daily, weekly, monthly };
+}
+
+/**
+ * `structuralBias` as a fold over one aggregate's candles: fold, then update the live candle as
+ * the bucket builds. The confirmed pivots the cursor has reached are frozen; only the newest
+ * pivot — whose window touches the live candle — and the live candle's own break are re-derived,
+ * so a read costs a step, not a rescan of the prefix (ticket 16).
+ */
+export class RollingStructuralBias {
+  private readonly width: number;
+  private readonly candles: Bar[] = [];
+  /** Confirmed pivot prices, ascending by index — all the break checks need of them. */
+  private readonly highPrices: number[] = [];
+  private readonly lowPrices: number[] = [];
+  private frozenHighBreak = -1;
+  private frozenLowBreak = -1;
+  private liveHigh = false;
+  private liveLow = false;
+  /** Is the newest evaluated candle (`live - width`) currently a confirmed pivot? */
+  private tailHigh = false;
+  private tailLow = false;
+
+  constructor(rules: StructureRules = {}) {
+    this.width = rules.swingWidth ?? DEFAULT_SWING_WIDTH;
+  }
+
+  /** Append the aggregate's next candle. Earlier candles are final from here on. */
+  fold(bar: Bar): void {
+    const live = this.candles.length;
+    if (live > 0) {
+      if (this.liveHigh) this.frozenHighBreak = live - 1;
+      if (this.liveLow) this.frozenLowBreak = live - 1;
+    }
+    this.candles.push(bar);
+
+    const index = live - this.width;
+    if (index >= this.width) {
+      this.tailHigh = this.isPivotHigh(index);
+      this.tailLow = this.isPivotLow(index);
+      if (this.tailHigh) this.highPrices.push(this.candles[index]!.high);
+      if (this.tailLow) this.lowPrices.push(this.candles[index]!.low);
+    } else {
+      this.tailHigh = false;
+      this.tailLow = false;
+    }
+
+    this.deriveLive(live);
+  }
+
+  /** Replace the still-open last candle — the bucket being built. */
+  update(bar: Bar): void {
+    const live = this.candles.length - 1;
+    if (live < 0) return;
+    this.candles[live] = bar;
+
+    // The only pivot the live candle's window can change is the newest one, and no earlier
+    // bar's break ever read it, so its flip is safe to apply in place. Its price comes from
+    // the pivot's own (already frozen) candle, which a live-candle update never changes.
+    const index = live - this.width;
+    if (index >= this.width) {
+      const pivotHigh = this.isPivotHigh(index);
+      if (pivotHigh !== this.tailHigh) {
+        if (pivotHigh) this.highPrices.push(this.candles[index]!.high);
+        else this.highPrices.pop();
+        this.tailHigh = pivotHigh;
+      }
+
+      const pivotLow = this.isPivotLow(index);
+      if (pivotLow !== this.tailLow) {
+        if (pivotLow) this.lowPrices.push(this.candles[index]!.low);
+        else this.lowPrices.pop();
+        this.tailLow = pivotLow;
+      }
+    }
+
+    this.deriveLive(live);
+  }
+
+  value(): BiasDirection {
+    const live = this.candles.length - 1;
+    const highBreak = this.liveHigh ? live : this.frozenHighBreak;
+    const lowBreak = this.liveLow ? live : this.frozenLowBreak;
+    if (highBreak === -1 && lowBreak === -1) return "none";
+    if (highBreak === lowBreak) return "none";
+    return highBreak > lowBreak ? "bullish" : "bearish";
+  }
+
+  /** The live candle's own break check, against the newest pivot the cursor has reached. */
+  private deriveLive(live: number): void {
+    const close = this.candles[live]!.close;
+    this.liveHigh = this.highPrices.length > 0 && close > this.highPrices[this.highPrices.length - 1]!;
+    this.liveLow = this.lowPrices.length > 0 && close < this.lowPrices[this.lowPrices.length - 1]!;
+  }
+
+  /** A pivot high under `findSwings`' rule: strictly above every bar in its window. */
+  private isPivotHigh(index: number): boolean {
+    const bar = this.candles[index]!;
+    for (let j = index - this.width; j <= index + this.width; j++) {
+      if (j === index) continue;
+      if (this.candles[j]!.high >= bar.high) return false;
+    }
+    return true;
+  }
+
+  private isPivotLow(index: number): boolean {
+    const bar = this.candles[index]!;
+    for (let j = index - this.width; j <= index + this.width; j++) {
+      if (j === index) continue;
+      if (this.candles[j]!.low <= bar.low) return false;
+    }
+    return true;
+  }
+}
+
+/**
+ * `biasSnapshot` as a fold: each execution bar is folded into the monthly, weekly and daily
+ * windows, and a session-day read is a step over three forward passes, not three
+ * prefix re-aggregations (ticket 16). `biasSnapshot` stays the reference implementation.
+ */
+export class BiasReader {
+  private readonly daily: RunningCandles;
+  private readonly weekly: RunningCandles;
+  private readonly monthly: RunningCandles;
+  private readonly dayBias: RollingStructuralBias;
+  private readonly weekBias: RollingStructuralBias;
+  private readonly monthBias: RollingStructuralBias;
+
+  constructor(cfg: StrategyConfig) {
+    this.daily = new RunningCandles("D1", cfg);
+    this.weekly = new RunningCandles("W1", cfg);
+    this.monthly = new RunningCandles("MN1", cfg);
+    this.dayBias = new RollingStructuralBias(cfg.structure);
+    this.weekBias = new RollingStructuralBias(cfg.structure);
+    this.monthBias = new RollingStructuralBias(cfg.structure);
+  }
+
+  /** Fold one execution bar into all three windows; call before reading `snapshot`. */
+  fold(bar: Bar): void {
+    this.foldOne(this.daily, this.dayBias, bar);
+    this.foldOne(this.weekly, this.weekBias, bar);
+    this.foldOne(this.monthly, this.monthBias, bar);
+  }
+
+  /** The monthly candles folded so far — `aggregate(prefix, "MN1")`, for the macro read. */
+  get months(): Bar[] {
+    return this.monthly.bars;
+  }
+
+  /** The day's resolved read (§3), equal to `biasSnapshot` over the bars folded so far. */
+  snapshot(): BiasSnapshot {
+    const daily = this.dayBias.value();
+    const weekly = this.weekBias.value();
+    const monthly = this.monthBias.value();
+    return { direction: resolveBias(daily, weekly, monthly), daily, weekly, monthly };
+  }
+
+  private foldOne(window: RunningCandles, bias: RollingStructuralBias, bar: Bar): void {
+    const opened = window.fold(bar);
+    const candle = window.current!;
+    if (opened) bias.fold(candle);
+    else bias.update(candle);
+  }
 }
 
 /**

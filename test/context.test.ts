@@ -107,6 +107,36 @@ test("the key level and the CRT are read inside the dealing range", () => {
   assert.equal(inside.crt, null, "no sweep, no CRT");
 });
 
+test("the CRT trigger stays valid for the configured lookback of H4 candles", () => {
+  // Quiet H4 candles after the CRT (through the next session day's London open): no fresh
+  // sweep, so only the lookback can arm a setup.
+  const quiet: Row = [1.2425, 1.244, 1.2428, 1.243];
+  const rows: Row[] = [...ROWS, quiet, quiet, quiet, quiet];
+  const bars = barsOf(rows, AFTER_LONDON);
+  const withTrigger = (lookback: number) =>
+    cfg({ execution: { requireCrt: true, crtLookbackBars: lookback } });
+
+  const fresh = contextSnapshot(bars, 7, withTrigger(6), "bullish")!;
+  assert.equal(fresh.recentCrt?.barsAgo, 0, "the CRT candle itself is the freshest trigger");
+
+  // Index 11 is 10:00 UTC on Jan 5: the CRT is four H4 candles back, and still in range.
+  const later = contextSnapshot(bars, 11, withTrigger(6), "bullish")!;
+  assert.equal(later.crt, null, "the new candle has no sweep of its own");
+  assert.equal(later.recentCrt?.side, "low", "the prior candle's CRT is still the trigger");
+  assert.equal(later.recentCrt?.barsAgo, 4);
+
+  assert.equal(
+    contextSnapshot(bars, 11, withTrigger(3), "bullish")!.recentCrt,
+    null,
+    "a shorter lookback has already expired the CRT",
+  );
+  assert.equal(
+    contextSnapshot(bars, 11, cfg(), "bullish")!.recentCrt,
+    null,
+    "without the trigger filter nothing is tracked",
+  );
+});
+
 test("the context vetoes only a misaligned map, and never before the open", () => {
   const context = (aligned: boolean) => ({
     timeframe: "H4" as const,
@@ -114,6 +144,7 @@ test("the context vetoes only a misaligned map, and never before the open", () =
     position: aligned ? ("discount" as const) : ("premium" as const),
     keyLevel: 1.242,
     crt: null,
+    recentCrt: null,
     aligned,
   });
 

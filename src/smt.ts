@@ -1,4 +1,4 @@
-import { findSignificantPoints, nearestPool, type StructureRules } from "./structure.js";
+import { findSignificantPoints, nearestPool, type StructureRules, type Swing } from "./structure.js";
 import type {
   Bar,
   BarSeries,
@@ -66,6 +66,58 @@ function biasFor(side: LiquiditySide): BiasDirection {
   return side === "low" ? "bullish" : "bearish";
 }
 
+/** The guards every divergence shares, and the pair bar the sweep is being read against. */
+function ready(
+  input: SmtInput,
+): { sweep: LiquidityEvent; pairBar: Bar; pairIndex: number } | null {
+  const { sweep, pairIndex } = input;
+  if (sweep === null || pairIndex === null) return null;
+
+  // 1) Aligned with the HTF bias.
+  if (input.bias !== biasFor(sweep.side)) return null;
+
+  // 2. Forms at an HTF key level.
+  if (input.keyLevel === null || input.keyLevel !== sweep.level) return null;
+
+  // 3. Forms at a key time.
+  if (!input.atKeyTime) return null;
+
+  const pairBar = input.pairBars[pairIndex];
+  if (pairBar === undefined) return null;
+
+  return { sweep, pairBar, pairIndex };
+}
+
+/** The pair's answer to "did it fail to take its own liquidity": both readers funnel here. */
+function conclude(
+  input: SmtInput,
+  sweep: LiquidityEvent,
+  pairBar: Bar,
+  pool: Swing | null,
+): SmtDivergence | null {
+  // The pair must have *failed* to take its own liquidity: its nearest prior pool on the same
+  // side is still intact. If the pair undercut it too, the move was correlated — no divergence.
+  if (pool === null) return null;
+
+  const took = sweep.side === "low" ? pairBar.low <= pool.price : pairBar.high >= pool.price;
+  if (took) return null;
+
+  return {
+    side: sweep.side,
+    took: input.traded,
+    failed: input.pair,
+    confirmedBy: input.confirmedBy,
+  };
+}
+
+/** The pair read a divergence needs of its instrument's points, scoped to the prefix at the pair bar. */
+export interface PoolQueries {
+  /** The highest qualified low — the pool `nearestPool` names on the low side. */
+  maxLow(): Swing | undefined;
+  /** The lowest qualified high — the pool `nearestPool` names on the high side. */
+  minHigh(): Swing | undefined;
+}
+
 /**
  * SMT divergence (§7.3): one instrument takes the liquidity and the correlated instrument fails to.
  *
@@ -79,34 +131,26 @@ function biasFor(side: LiquiditySide): BiasDirection {
  * must not fire a trade.
  */
 export function smtDivergence(input: SmtInput): SmtDivergence | null {
-  const { sweep, pairIndex } = input;
-  if (sweep === null || pairIndex === null) return null;
+  const state = ready(input);
+  if (state === null) return null;
 
-  // 1) Aligned with the HTF bias.
-  if (input.bias !== biasFor(sweep.side)) return null;
+  const cursor = state.pairIndex + 1;
+  const points = findSignificantPoints(input.pairBars.slice(0, cursor), input.structure);
+  const pool = nearestPool(points, state.sweep.side, (swing) => swing.index < state.pairIndex);
 
-  // 2. Forms at an HTF key level.
-  if (input.keyLevel === null || input.keyLevel !== sweep.level) return null;
+  return conclude(input, state.sweep, state.pairBar, pool);
+}
 
-  // 3. Forms at a key time.
-  if (!input.atKeyTime) return null;
+/**
+ * `smtDivergence` against a pair point set folded up to the pair bar (ticket 16). The read the
+ * reference makes — `nearestPool` of the prefix under `index < pairIndex` — is the prefix's
+ * highest low or lowest high: every point the prefix confirmed sits at least a swing width before
+ * the pair bar, so the predicate holds for all of them.
+ */
+export function smtDivergenceOf(input: SmtInput, pools: PoolQueries): SmtDivergence | null {
+  const state = ready(input);
+  if (state === null) return null;
 
-  // The pair must have *failed* to take its own liquidity: its nearest prior pool on the same
-  // side is still intact. If the pair undercut it too, the move was correlated — no divergence.
-  const pairBar = input.pairBars[pairIndex];
-  if (pairBar === undefined) return null;
-
-  const points = findSignificantPoints(input.pairBars.slice(0, pairIndex + 1), input.structure);
-  const pool = nearestPool(points, sweep.side, (swing) => swing.index < pairIndex);
-  if (pool === null) return null;
-
-  const took = sweep.side === "low" ? pairBar.low <= pool.price : pairBar.high >= pool.price;
-  if (took) return null;
-
-  return {
-    side: sweep.side,
-    took: input.traded,
-    failed: input.pair,
-    confirmedBy: input.confirmedBy,
-  };
+  const pool = state.sweep.side === "low" ? pools.maxLow() : pools.minHigh();
+  return conclude(input, state.sweep, state.pairBar, pool ?? null);
 }

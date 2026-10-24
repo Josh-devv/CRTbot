@@ -1,12 +1,13 @@
 import type {
   Bar,
   Direction,
+  LiquidityEvent,
   ObBehaviour,
   OrderBlock,
   OrderBlockScore,
   PricePosition,
 } from "./types.js";
-import { liquidityEventAt } from "./liquidity.js";
+import { liquidityEventAt, liquidityEventAtOf, type LevelQueries } from "./liquidity.js";
 import type { SignificantPoints } from "./structure.js";
 
 /**
@@ -106,20 +107,45 @@ function zoneFor(
   return wick ? { top, bottom, part: "wick" } : { top: bodyTop, bottom: bodyBottom, part: "body" };
 }
 
+/** Suffix scans turning "did any later bar ..." into an O(1) read. */
+interface Suffix {
+  /** The lowest low from each index to the end; `Infinity` past the last bar. */
+  minLow: number[];
+  /** The highest high from each index to the end; `-Infinity` past the last bar. */
+  maxHigh: number[];
+}
+
+function suffixScans(bars: Bar[]): Suffix {
+  const minLow = new Array<number>(bars.length + 1).fill(Infinity);
+  const maxHigh = new Array<number>(bars.length + 1).fill(-Infinity);
+  for (let i = bars.length - 1; i >= 0; i--) {
+    minLow[i] = Math.min(minLow[i + 1]!, bars[i]!.low);
+    maxHigh[i] = Math.max(maxHigh[i + 1]!, bars[i]!.high);
+  }
+  return { minLow, maxHigh };
+}
+
 /** The qualifying behaviours a single candle shows (ruleset §6). */
-function behavioursAt(bars: Bar[], index: number, rules: OrderBlockRules): ObBehaviour[] {
+function behavioursAt(
+  bars: Bar[],
+  index: number,
+  rules: OrderBlockRules,
+  eventAt: (index: number) => LiquidityEvent | null,
+  suffix: Suffix,
+): ObBehaviour[] {
   const bar = bars[index]!;
   const found: ObBehaviour[] = [];
 
-  const event = liquidityEventAt(bar, index, rules.points);
+  const event = eventAt(index);
   if (event !== null) {
     found.push("purge");
     // Generating liquidity: a CRT whose own liquidity is later taken.
     if (event.isCrt) {
       const extreme = event.side === "low" ? bar.low : bar.high;
-      const later = bars
-        .slice(index + 1)
-        .some((next) => (event.side === "low" ? next.low < extreme : next.high > extreme));
+      const later =
+        event.side === "low"
+          ? suffix.minLow[index + 1]! < extreme
+          : suffix.maxHigh[index + 1]! > extreme;
       if (later) found.push("generate");
     }
   }
@@ -144,8 +170,34 @@ function testsPrior(bars: Bar[], from: number, to: number, prior: OrderBlock[]):
  * qualifying behaviour **and** is engulfed by a later candle. Missing either is not a block.
  */
 export function findOrderBlocks(bars: Bar[], rules: OrderBlockRules): OrderBlock[] {
+  return collectOrderBlocks(bars, rules, (index) =>
+    liquidityEventAt(bars[index]!, index, rules.points),
+  );
+}
+
+/**
+ * `findOrderBlocks` against a queryable point set (ticket 16): the per-candle liquidity read
+ * becomes `liquidityEventAtOf`, and the "liquidity taken later" scan is precomputed. The set
+ * must already hold every level of the series, exactly as `rules.points` does.
+ */
+export function findOrderBlocksOf(
+  bars: Bar[],
+  rules: OrderBlockRules,
+  queries: LevelQueries,
+): OrderBlock[] {
+  return collectOrderBlocks(bars, rules, (index) =>
+    liquidityEventAtOf(bars[index]!, index, queries),
+  );
+}
+
+function collectOrderBlocks(
+  bars: Bar[],
+  rules: OrderBlockRules,
+  eventAt: (index: number) => LiquidityEvent | null,
+): OrderBlock[] {
   const blocks: OrderBlock[] = [];
   const consumed = new Array<boolean>(bars.length).fill(false);
+  const suffix = suffixScans(bars);
 
   for (let i = 1; i < bars.length; i++) {
     const engulfing = bars[i]!;
@@ -168,7 +220,7 @@ export function findOrderBlocks(bars: Bar[], rules: OrderBlockRules): OrderBlock
 
     const behaviours: ObBehaviour[] = [];
     for (let j = from; j <= i - 1; j++) {
-      for (const behaviour of behavioursAt(bars, j, rules)) {
+      for (const behaviour of behavioursAt(bars, j, rules, eventAt, suffix)) {
         if (!behaviours.includes(behaviour)) behaviours.push(behaviour);
       }
     }

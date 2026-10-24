@@ -1,6 +1,16 @@
 node_modules/
 dist/
 data/
+.env
 *.parquet
 *.log
 .DS_Store
+
+# generated research output
+chunk-*.txt
+ten-year-*.txt
+grid-*.txt
+nq-*.txt
+es-*.txt
+scratch-filters-dump.json
+CPU.*.cpuprofile

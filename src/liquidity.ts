@@ -1,5 +1,5 @@
 import type { Bar, LiquidityEvent, LiquiditySide, RejectionKind } from "./types.js";
-import { nearestPool, type SignificantPoints } from "./structure.js";
+import { nearestPool, type SignificantPoints, type Swing } from "./structure.js";
 
 export interface PurgeEvent {
   index: number;
@@ -28,13 +28,28 @@ export function isCrt(bar: Bar, level: number, side: LiquiditySide): boolean {
   return side === "low" ? bar.close > bar.open : bar.close < bar.open;
 }
 
-/** Every significant level this single bar sweeps. */
-function purgesAt(bar: Bar, index: number, points: SignificantPoints): PurgeEvent[] {
-  const levels: { price: number; index: number; side: LiquiditySide }[] = [
-    ...points.lows.map((low) => ({ price: low.price, index: low.index, side: "low" as const })),
-    ...points.highs.map((high) => ({ price: high.price, index: high.index, side: "high" as const })),
-  ];
+/** A significant level a bar may sweep. */
+interface Level {
+  price: number;
+  index: number;
+  side: LiquiditySide;
+}
 
+/**
+ * The as-of level reads a liquidity event needs of a point set: the levels inside a bar's
+ * trade window, and the nearest pool beyond a swept level. The replay answers these against
+ * its rolling set; the `SignificantPoints` path scans and filters.
+ */
+export interface LevelQueries {
+  /** Qualified levels strictly inside (lower, upper), skipping points at or past `limit`. */
+  levelsInBand(side: LiquiditySide, lower: number, upper: number, limit: number): Swing[];
+  /** The nearest qualified low strictly below / high strictly above `price`, skipping `skipIndex`. */
+  nearestLowBelow(price: number, skipIndex?: number): Swing | undefined;
+  nearestHighAbove(price: number, skipIndex?: number): Swing | undefined;
+}
+
+/** The purge events among `levels` for this bar, in the deterministic sweep order. */
+function purgeEvents(bar: Bar, index: number, levels: Level[]): PurgeEvent[] {
   const purges: PurgeEvent[] = [];
   for (const level of levels) {
     if (level.index >= index) continue;
@@ -48,13 +63,40 @@ function purgesAt(bar: Bar, index: number, points: SignificantPoints): PurgeEven
     });
   }
 
-  // Deterministic order so a caller can take the first sweep as "the" event: nearest
-  // level first (the highest low, the lowest high), and low-side sweeps before high-side.
+  // Deterministic order so a caller can take the first sweep as "the" event: nearest level
+  // first (the highest low, the lowest high), low-side sweeps before high-side, and — as the
+  // reference's stable sort leaves them — levels sharing a price in ascending index order.
   purges.sort((a, b) => {
     if (a.side !== b.side) return a.side === "low" ? -1 : 1;
-    return a.side === "low" ? b.level - a.level : a.level - b.level;
+    const byLevel = a.side === "low" ? b.level - a.level : a.level - b.level;
+    return byLevel !== 0 ? byLevel : a.index - b.index;
   });
   return purges;
+}
+
+/** Every significant level this single bar sweeps. */
+function purgesAt(bar: Bar, index: number, points: SignificantPoints): PurgeEvent[] {
+  const levels: Level[] = [
+    ...points.lows.map((low) => ({ price: low.price, index: low.index, side: "low" as const })),
+    ...points.highs.map((high) => ({ price: high.price, index: high.index, side: "high" as const })),
+  ];
+  return purgeEvents(bar, index, levels);
+}
+
+/**
+ * The same sweep read against a queryable point set: only levels inside the bar's trade window
+ * can purge (the close-back test), so the band is the whole search space — no prefix scan.
+ */
+function purgesAtOf(bar: Bar, index: number, queries: LevelQueries): PurgeEvent[] {
+  const levels: Level[] = [
+    ...queries
+      .levelsInBand("low", bar.low, bar.close, index)
+      .map((low) => ({ price: low.price, index: low.index, side: "low" as const })),
+    ...queries
+      .levelsInBand("high", bar.close, bar.high, index)
+      .map((high) => ({ price: high.price, index: high.index, side: "high" as const })),
+  ];
+  return purgeEvents(bar, index, levels);
 }
 
 /** Every purge of a significant level across the series, ascending by bar. */
@@ -106,6 +148,20 @@ function relativeDol(
   return pool === null ? null : pool.price;
 }
 
+/** The same relative DOL against a queryable point set. */
+function relativeDolOf(
+  queries: LevelQueries,
+  level: number,
+  side: LiquiditySide,
+  sweepIndex: number,
+): number | null {
+  const pool =
+    side === "low"
+      ? queries.nearestLowBelow(level, sweepIndex)
+      : queries.nearestHighAbove(level, sweepIndex);
+  return pool === undefined ? null : pool.price;
+}
+
 /** The liquidity read for a single bar, as recorded on a decision. */
 export function liquidityEventAt(
   bar: Bar,
@@ -118,6 +174,30 @@ export function liquidityEventAt(
   if (purge === undefined) return null;
 
   const dol = relativeDol(points, purge.level, purge.side, index);
+
+  return {
+    side: purge.side,
+    level: purge.level,
+    extreme: purge.extreme,
+    isCrt: isCrt(bar, purge.level, purge.side),
+    kind: dol === null ? null : classifyRejection(purge.extreme, dol, purge.side),
+  };
+}
+
+/**
+ * The liquidity read for a single bar against a queryable point set — `liquidityEventAt`'s
+ * fast path. Answers identically; the set must already hold every level of the series, because
+ * the relative DOL is resolved across the whole series, not up to the bar.
+ */
+export function liquidityEventAtOf(
+  bar: Bar,
+  index: number,
+  queries: LevelQueries,
+): LiquidityEvent | null {
+  const purge = purgesAtOf(bar, index, queries)[0];
+  if (purge === undefined) return null;
+
+  const dol = relativeDolOf(queries, purge.level, purge.side, index);
 
   return {
     side: purge.side,

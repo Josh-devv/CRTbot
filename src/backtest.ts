@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
 
-import { aggregate, bucketStart, EXECUTION_TIMEFRAME } from "./candles.js";
-import { biasSnapshot } from "./bias.js";
-import { contextSnapshot } from "./context.js";
+import { BiasReader } from "./bias.js";
+import { bucketStart, EXECUTION_TIMEFRAME } from "./candles.js";
+import { ContextReader } from "./context.js";
 import { dayStandDown, exceptionsInPlay, foldDay } from "./exceptions.js";
-import { liquidityEventAt } from "./liquidity.js";
-import { findOrderBlocks } from "./orderblocks.js";
+import { liquidityEventAtOf } from "./liquidity.js";
+import { findOrderBlocksOf } from "./orderblocks.js";
 import { expansionTest } from "./profiles.js";
+import { ActivePoints, foldPoints, PointSet, RollingPoints } from "./rolling.js";
 import { macroContext } from "./seasonality.js";
-import { correlatedPair, smtDivergence } from "./smt.js";
+import { correlatedPair, smtDivergenceOf } from "./smt.js";
 import { computeStats } from "./stats.js";
-import { findSignificantPoints, structureSnapshot, type SignificantPoints } from "./structure.js";
+import { structureSnapshotOf } from "./structure.js";
 import { placeholderLong, type Signal, type Strategy, type StrategyContext } from "./strategy.js";
 import {
   isKeyMacro,
@@ -37,6 +38,7 @@ import type {
   OrderBlock,
   SmtDivergence,
   StrategyConfig,
+  StructureSnapshot,
   Trade,
 } from "./types.js";
 
@@ -98,6 +100,8 @@ interface Pending {
   reason: string;
   /** Session day the setup was armed on; it expires with the day. */
   day: number;
+  /** Whether the fill-timing deferral has already been logged for this setup. */
+  deferralLogged?: boolean;
 }
 
 /** Has the bar traded through the resting limit? */
@@ -147,7 +151,8 @@ export interface BacktestOptions {
 function decisionReads(input: {
   bar: Bar;
   index: number;
-  points: SignificantPoints;
+  /** The structural read at this bar, against points activated up to its index. */
+  structure: StructureSnapshot | null;
   cfg: StrategyConfig;
   orderBlocks: OrderBlock[];
   bias: BiasDirection;
@@ -177,9 +182,8 @@ function decisionReads(input: {
 > {
   const {
     bar,
-    index,
     cfg,
-    points,
+    structure,
     orderBlocks,
     bias,
     context,
@@ -201,7 +205,7 @@ function decisionReads(input: {
     expansionTest,
     macro,
     bucket: { timeframe: EXECUTION_TIMEFRAME, time: bucketStart(bar.time, EXECUTION_TIMEFRAME, cfg) },
-    structure: structureSnapshot(points, index, bar.close) ?? undefined,
+    structure: structure ?? undefined,
     liquidity: sweep ?? undefined,
     orderBlocks: orderBlocks.length > 0 ? orderBlocks : undefined,
   };
@@ -211,37 +215,45 @@ function decisionReads(input: {
  * SMT for one bar (§7.3). The two lower-timeframe confirmations are read off this bar: a sweep
  * classified as a CSD, or an order block confirmed here. Either validates a divergence; neither
  * means the divergence is flagged but unconfirmed — and unconfirmed divergence never trades.
+ *
+ * The pair's significant points ride a rolling pass folded up to the pair bar (`pairPoints`),
+ * answering exactly as the reference's re-read prefix does (ticket 16).
  */
 function detectSmt(input: {
   bar: Bar;
   cfg: StrategyConfig;
   series: BarSeries;
   pairSeries: BarSeries | null;
+  pairPoints: RollingPoints | null;
   pairIndexByTime: Map<number, number>;
   context: ContextSnapshot | null;
   sweep: LiquidityEvent | null;
   blocksHere: OrderBlock[];
   bias: BiasDirection;
 }): SmtDivergence | null {
-  const { bar, cfg, series, pairSeries, pairIndexByTime, context, sweep, blocksHere, bias } = input;
-  if (pairSeries === null || context === null) return null;
+  const { bar, cfg, series, pairSeries, pairPoints, pairIndexByTime, context, sweep, blocksHere, bias } =
+    input;
+  if (pairSeries === null || pairPoints === null || context === null) return null;
 
   const { session } = cfg;
   const confirmedBy: SmtDivergence["confirmedBy"] =
     sweep?.kind === "csd" ? "csd" : blocksHere.length > 0 ? "order-block" : null;
 
-  return smtDivergence({
-    traded: series.instrument,
-    pair: pairSeries.instrument,
-    sweep,
-    pairBars: pairSeries.bars,
-    pairIndex: pairIndexByTime.get(bar.time) ?? null,
-    bias,
-    keyLevel: context.keyLevel,
-    atKeyTime: killzoneOf(bar.time, session) !== null || isKeyMacro(bar.time, session),
-    confirmedBy,
-    structure: cfg.structure,
-  });
+  return smtDivergenceOf(
+    {
+      traded: series.instrument,
+      pair: pairSeries.instrument,
+      sweep,
+      pairBars: pairSeries.bars,
+      pairIndex: pairIndexByTime.get(bar.time) ?? null,
+      bias,
+      keyLevel: context.keyLevel,
+      atKeyTime: killzoneOf(bar.time, session) !== null || isKeyMacro(bar.time, session),
+      confirmedBy,
+      structure: cfg.structure,
+    },
+    pairPoints,
+  );
 }
 
 /**
@@ -258,18 +270,30 @@ export function runBacktest(
   options: BacktestOptions = {},
 ): BacktestResult {
   const strategy = options.strategy ?? placeholderLong(cfg);
-  const points = findSignificantPoints(series.bars, cfg.structure);
+
+  // One forward pass derives every significant point of the series (ticket 16); the pure
+  // `findSignificantPoints` stays the reference, pinned equal by `test/rolling.test.ts`.
+  const points = foldPoints(series.bars, cfg.structure).toPoints();
+  // The two query surfaces the replay reads: liquidity resolves across the whole series (the
+  // relative DOL is a whole-series read), and structure is scoped to the cursor as it advances.
+  const levels = PointSet.fromPoints(points);
+  const activePoints = new ActivePoints(points.highs, points.lows);
 
   // SMT needs the correlated instrument's bars at the same times (§7.3): pair the traded series
   // with the configured correlation and index its bars by time.
   const pair = correlatedPair(cfg, series.instrument, options.dataset);
   const pairSeries = pair?.series ?? null;
   const pairIndexByTime = pair?.indexByTime ?? new Map<number, number>();
+  const pairPoints = pairSeries === null ? null : new RollingPoints(cfg.structure);
+  let pairFolded = 0;
+
+  const biasReader = new BiasReader(cfg);
+  const contextReader = new ContextReader(cfg);
 
   // Group blocks by the candle that engulfs them, so each decision can name the blocks
   // confirmed on that bar.
   const blocksByEngulfing = new Map<number, OrderBlock[]>();
-  for (const block of findOrderBlocks(series.bars, { points })) {
+  for (const block of findOrderBlocksOf(series.bars, { points }, levels)) {
     const existing = blocksByEngulfing.get(block.engulfedBy);
     if (existing === undefined) blocksByEngulfing.set(block.engulfedBy, [block]);
     else existing.push(block);
@@ -299,6 +323,11 @@ export function runBacktest(
   for (let i = 0; i < series.bars.length; i++) {
     const bar = series.bars[i]!;
 
+    // Fold this bar into the rolling readers first: every read below answers "as of this bar".
+    biasReader.fold(bar);
+    contextReader.fold(bar);
+    activePoints.activateThrough(i);
+
     // Session-day rollover: the counter resets and the day's bias is read fresh, from structure
     // up to and including this bar only.
     const day = sessionDayStart(bar.time, cfg.session);
@@ -306,13 +335,12 @@ export function runBacktest(
     if (day !== currentDay) {
       currentDay = day;
       tradesToday = 0;
-      biasToday = biasSnapshot(series.bars.slice(0, i + 1), cfg).direction;
+      biasToday = biasReader.snapshot().direction;
       // The macro context is a monthly-level read (§3.1.1): it cannot change until the month does.
       const month = monthStart(bar.time, cfg.session);
       if (month !== macroMonthStart) {
         macroMonthStart = month;
-        const months = aggregate(series.bars.slice(0, i + 1), "MN1", cfg);
-        macroToday = macroContext(months, bar.time, cfg);
+        macroToday = macroContext(biasReader.months, bar.time, cfg);
       }
       if (today !== null) completedDays.push(today);
       today = null;
@@ -332,13 +360,27 @@ export function runBacktest(
     });
 
     const blocksHere = blocksByEngulfing.get(i) ?? [];
-    const sweep = liquidityEventAt(bar, i, points);
-    const ctxContext = contextSnapshot(series.bars, i, cfg, biasToday);
+    const sweep = liquidityEventAtOf(bar, i, levels);
+    const ctxContext = contextReader.at(bar, biasToday);
+
+    // The pair's points fold forward only as far as this bar's index; the read below is the
+    // same prefix the reference re-aggregates for SMT.
+    if (pairSeries !== null && pairPoints !== null) {
+      const pairIndex = pairIndexByTime.get(bar.time);
+      if (pairIndex !== undefined) {
+        while (pairFolded <= pairIndex) {
+          pairPoints.fold(pairSeries.bars[pairFolded]!);
+          pairFolded += 1;
+        }
+      }
+    }
+
     const smt = detectSmt({
       bar,
       cfg,
       series,
       pairSeries,
+      pairPoints,
       pairIndexByTime,
       context: ctxContext,
       sweep,
@@ -348,8 +390,8 @@ export function runBacktest(
     const context = decisionReads({
       bar,
       index: i,
-      points,
       cfg,
+      structure: structureSnapshotOf(activePoints, bar.close),
       orderBlocks: blocksHere,
       bias: biasToday,
       context: ctxContext,
@@ -398,8 +440,26 @@ export function runBacktest(
       continue;
     }
 
-    // 3) Fill a resting limit order.
+    // 3) Fill a resting limit order — unless the fill-timing filter (ticket 21) has the limit
+    // wait for the killzone to close before it may take its fill.
     if (openTrade === null && pending !== null && reached(bar, pending)) {
+      const deferred =
+        cfg.execution?.fillOutsideKillzoneOnly === true &&
+        killzoneOf(bar.time, cfg.session) !== null;
+      if (deferred) {
+        if (pending.deferralLogged !== true) {
+          pending.deferralLogged = true;
+          decisions.push({
+            time: bar.time,
+            action: "wait",
+            reason: "fill deferred: inside the killzone (fillOutsideKillzoneOnly)",
+            direction: pending.direction,
+            ...context,
+          });
+        }
+        continue;
+      }
+
       const dir = pending.direction === "long" ? 1 : -1;
       const fill = pending.entry + dir * (cfg.costs.spread / 2 + cfg.costs.slippage);
       const { size, riskAmount } = sizeFor(equity, cfg, fill, pending.stop);

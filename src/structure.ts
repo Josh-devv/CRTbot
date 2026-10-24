@@ -193,3 +193,58 @@ export function structureSnapshot(
     dol: drawOnLiquidity(points, range, price, index),
   };
 }
+
+/**
+ * The as-of reads a structure snapshot needs of a point set: the points framing the dealing
+ * range and the DOL pools around the current price. A replay answers these with a rolling set
+ * already scoped to "now"; the plain `SignificantPoints` path filters and reduces by scan.
+ */
+export interface SnapshotQueries {
+  /** The qualified high / low with the largest index at or before "now". */
+  lastHigh(): Swing | undefined;
+  lastLow(): Swing | undefined;
+  /** The nearest qualified low strictly below / high strictly above `price` — the short-term DOL. */
+  nearestLowBelow(price: number): Swing | undefined;
+  nearestHighAbove(price: number): Swing | undefined;
+  /** The deepest qualified low below / highest high above `price` — the long-term DOL. */
+  lowestLowBelow(price: number): Swing | undefined;
+  highestHighAbove(price: number): Swing | undefined;
+}
+
+/** `dealingRange` against a queryable point set already scoped to "now". */
+export function dealingRangeOf(queries: SnapshotQueries): DealingRange | null {
+  const high = queries.lastHigh();
+  const low = queries.lastLow();
+  if (high === undefined || low === undefined) return null;
+
+  return {
+    high,
+    low,
+    start: Math.min(high.time, low.time),
+    end: Math.max(high.time, low.time),
+    equilibrium: (high.price + low.price) / 2,
+  };
+}
+
+/** `structureSnapshot` against a queryable point set already scoped to "now". */
+export function structureSnapshotOf(
+  queries: SnapshotQueries,
+  price: number,
+): StructureSnapshot | null {
+  const range = dealingRangeOf(queries);
+  if (range === null) return null;
+
+  const drawingUp = price <= range.equilibrium;
+  const nearest = drawingUp ? queries.nearestHighAbove(price) : queries.nearestLowBelow(price);
+  const extreme = drawingUp ? queries.highestHighAbove(price) : queries.lowestLowBelow(price);
+  const dol =
+    nearest !== undefined && extreme !== undefined
+      ? { shortTerm: nearest.price, longTerm: extreme.price }
+      : null;
+
+  return {
+    range: { high: range.high.price, low: range.low.price, equilibrium: range.equilibrium },
+    position: classifyPrice(price, range),
+    dol,
+  };
+}

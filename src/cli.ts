@@ -96,7 +96,7 @@ function flag(rest: string[], name: string): string | undefined {
 function demoRun(withSensitivity: boolean): { result: BacktestResult; report: Report } {
   const series = syntheticSeries();
   const config = demoConfig();
-  const options = { strategy: axisSystem() };
+  const options = { strategy: axisSystem(config.execution) };
   const result = runBacktest(series, config, options);
   const sweep = withSensitivity ? costSensitivity({ series, cfg: config, options }) : null;
 
@@ -179,7 +179,6 @@ async function storedCommand(rest: string[]): Promise<number> {
     );
   }
 
-  const strategy = axisSystem();
   const others = (instrument: Instrument): BarSeries[] =>
     [...loaded.values()].filter((other) => other.instrument !== instrument);
   const runs: StoredRun[] = wanted.map((instrument) => {
@@ -187,7 +186,10 @@ async function storedCommand(rest: string[]): Promise<number> {
     return {
       instrument,
       series,
-      result: runBacktest(series, realConfig(instrument), { strategy, dataset: others(instrument) }),
+      result: runBacktest(series, realConfig(instrument), {
+        strategy: axisSystem(realConfig(instrument).execution),
+        dataset: others(instrument),
+      }),
     };
   });
 
@@ -196,7 +198,10 @@ async function storedCommand(rest: string[]): Promise<number> {
       ? costSensitivity({
           series: runs[0]!.series,
           cfg: realConfig(runs[0]!.instrument),
-          options: { strategy, dataset: others(runs[0]!.instrument) },
+          options: {
+            strategy: axisSystem(realConfig(runs[0]!.instrument).execution),
+            dataset: others(runs[0]!.instrument),
+          },
         })
       : null;
 

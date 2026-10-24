@@ -1,15 +1,43 @@
-import { aggregate } from "./candles.js";
-import { liquidityEventAt } from "./liquidity.js";
-import { classifyPrice, dealingRange, findSignificantPoints, type DealingRange } from "./structure.js";
+import { aggregate, RunningCandles } from "./candles.js";
+import { liquidityEventAt, liquidityEventAtOf } from "./liquidity.js";
+import {
+  classifyPrice,
+  dealingRange,
+  dealingRangeOf,
+  findSignificantPoints,
+  type DealingRange,
+} from "./structure.js";
+import { RollingPoints } from "./rolling.js";
 import { sessionWindowStart } from "./time.js";
-import type { Bar, BiasDirection, ContextSnapshot, SmtDivergence, StrategyConfig } from "./types.js";
+import type {
+  Bar,
+  BiasDirection,
+  ContextSnapshot,
+  CrtView,
+  LiquidityEvent,
+  SmtDivergence,
+  StrategyConfig,
+} from "./types.js";
 
 /** Context is the H4 layer (ruleset §4). */
 export const CONTEXT_TIMEFRAME = "H4";
 
+/** How many H4 candles a CRT stays a valid trigger by default (24 hours). */
+const DEFAULT_CRT_LOOKBACK_BARS = 6;
+
 /** Is the swept level one of the prices framing the dealing range? (§4.3 "within it") */
 function withinRange(level: number, range: DealingRange): boolean {
   return level >= range.low.price && level <= range.high.price;
+}
+
+/** The sweep as the range's CRT: it took a level of this range and the body continued away. */
+function crtOf(sweep: LiquidityEvent | null, range: DealingRange): LiquidityEvent | null {
+  return sweep !== null && sweep.isCrt && withinRange(sweep.level, range) ? sweep : null;
+}
+
+/** The lookback the CRT trigger is configured with. */
+function crtLookback(cfg: StrategyConfig): number {
+  return cfg.execution?.crtLookbackBars ?? DEFAULT_CRT_LOOKBACK_BARS;
 }
 
 /**
@@ -68,7 +96,25 @@ export function contextSnapshot(
 
   // Only a sweep that took a level *of this range* and continued away from it is its CRT.
   const sweep = liquidityEventAt(h4[last]!, last, points);
-  const crt = sweep !== null && sweep.isCrt && withinRange(sweep.level, range) ? sweep : null;
+  const crt = crtOf(sweep, range);
+
+  // The trigger, when asked for: the newest CRT within the lookback, the current candle first.
+  let recentCrt: CrtView | null = null;
+  if (cfg.execution?.requireCrt === true) {
+    if (crt !== null) {
+      recentCrt = { ...crt, barsAgo: 0 };
+    } else {
+      for (let ago = 1; ago <= crtLookback(cfg); ago++) {
+        const index = last - ago;
+        if (index < 0) break;
+        const earlier = crtOf(liquidityEventAt(h4[index]!, index, points), range);
+        if (earlier !== null) {
+          recentCrt = { ...earlier, barsAgo: ago };
+          break;
+        }
+      }
+    }
+  }
 
   return {
     timeframe: "H4",
@@ -77,6 +123,82 @@ export function contextSnapshot(
     // A bullish bias works from the discount low; a bearish one from the premium high.
     keyLevel: bias === "bullish" ? range.low.price : range.high.price,
     crt,
+    recentCrt,
     aligned,
   };
+}
+
+/**
+ * The context layer as a fold: feed each execution bar in, then read `at` for it — the H4 window
+ * is folded forward rather than re-aggregated per bar, and its points ride a rolling pass
+ * (ticket 16). `contextSnapshot` stays the reference; this answers identically bar for bar.
+ */
+export class ContextReader {
+  private readonly cfg: StrategyConfig;
+  private readonly h4: RunningCandles;
+  private readonly points: RollingPoints;
+
+  constructor(cfg: StrategyConfig) {
+    this.cfg = cfg;
+    this.h4 = new RunningCandles(CONTEXT_TIMEFRAME, cfg);
+    this.points = new RollingPoints(cfg.structure);
+  }
+
+  /** Fold one execution bar into the H4 window; call before reading `at` for that bar. */
+  fold(bar: Bar): void {
+    const opened = this.h4.fold(bar);
+    const current = this.h4.current;
+    if (current === undefined) return;
+    if (opened) this.points.fold(current);
+    else this.points.update(current);
+  }
+
+  /** The context for `bar`, which must be the bar last folded (§4). */
+  at(bar: Bar, bias: BiasDirection): ContextSnapshot | null {
+    if (bias === "none") return null;
+    if (bar.time < sessionWindowStart(bar.time, "london", this.cfg.session)) return null;
+
+    const last = this.h4.bars.length - 1;
+    if (last < 0) return null;
+
+    const range = dealingRangeOf(this.points);
+    if (range === null) return null;
+
+    const position = classifyPrice(bar.close, range);
+    const aligned =
+      (bias === "bullish" && position === "discount") ||
+      (bias === "bearish" && position === "premium");
+
+    // Only a sweep that took a level *of this range* and continued away from it is its CRT.
+    const sweep = liquidityEventAtOf(this.h4.bars[last]!, last, this.points);
+    const crt = crtOf(sweep, range);
+
+    // The trigger, when asked for: the newest CRT within the lookback, the current candle first.
+    let recentCrt: CrtView | null = null;
+    if (this.cfg.execution?.requireCrt === true) {
+      if (crt !== null) {
+        recentCrt = { ...crt, barsAgo: 0 };
+      } else {
+        for (let ago = 1; ago <= crtLookback(this.cfg); ago++) {
+          const index = last - ago;
+          if (index < 0) break;
+          const earlier = crtOf(liquidityEventAtOf(this.h4.bars[index]!, index, this.points), range);
+          if (earlier !== null) {
+            recentCrt = { ...earlier, barsAgo: ago };
+            break;
+          }
+        }
+      }
+    }
+
+    return {
+      timeframe: "H4",
+      range: { high: range.high.price, low: range.low.price, equilibrium: range.equilibrium },
+      position,
+      keyLevel: bias === "bullish" ? range.low.price : range.high.price,
+      crt,
+      recentCrt,
+      aligned,
+    };
+  }
 }

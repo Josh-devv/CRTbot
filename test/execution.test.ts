@@ -184,6 +184,7 @@ function contextSnapshot(
     position,
     keyLevel: position === "discount" ? 9 : 10,
     crt: null,
+    recentCrt: null,
     aligned,
   };
 }
@@ -252,4 +253,127 @@ test("a divergence does not overrule the day's bias", () => {
 
   assert.ok(refused !== null && !("direction" in refused), "a long against a bearish bias is refused");
   assert.match(refused.reason, /bias/i);
+});
+
+test("the risk floor refuses setups under the configured pips and keeps the reason", () => {
+  // BLOCK's zone is 0.8 fixture units wide; this clone's is exactly one pip (0.0001).
+  const tight: OrderBlock = { ...BLOCK, open: 9.5, bottom: 9.4999 };
+  const ctx = strategyContext({ orderBlocks: [tight] });
+
+  const refused = axisSystem({ minRiskPips: 3 }).decide(ctx);
+  assert.ok(refused !== null && !("direction" in refused), "a 1-pip block is refused");
+  assert.match(refused.reason, /under the 3 pip floor/, "the reason states the floor");
+
+  const taken = axisSystem({ minRiskPips: 3 }).decide(
+    strategyContext({ orderBlocks: [{ ...BLOCK, bottom: 9.499, open: 9.5 }] }),
+  );
+  assert.ok(taken !== null && "direction" in taken, "a 10-pip block passes the floor");
+
+  const unfiltered = axisSystem().decide(ctx);
+  assert.ok(unfiltered !== null && "direction" in unfiltered, "without the floor the block is taken");
+});
+
+test("purgeOnly refuses blocks that also generate liquidity", () => {
+  const generating: OrderBlock = { ...BLOCK, behaviours: ["purge", "generate"] };
+  const ctx = strategyContext({ orderBlocks: [generating] });
+
+  const refused = axisSystem({ purgeOnly: true }).decide(ctx);
+  assert.ok(refused !== null && !("direction" in refused), "a purge+generate block is refused");
+  assert.match(refused.reason, /purge only/);
+
+  const taken = axisSystem({ purgeOnly: true }).decide(
+    strategyContext({ orderBlocks: [{ ...BLOCK, behaviours: ["purge"] }] }),
+  );
+  assert.ok(taken !== null && "direction" in taken, "a purge-only block is taken");
+
+  const unfiltered = axisSystem().decide(ctx);
+  assert.ok(unfiltered !== null && "direction" in unfiltered, "without the filter the block is taken");
+});
+
+test("the block-part filter selects only the wanted resolution", () => {
+  const body: OrderBlock = { ...BLOCK, part: "body" };
+  const ctx = strategyContext({ orderBlocks: [body] });
+
+  const refused = axisSystem({ blockPart: "wick" }).decide(ctx);
+  assert.ok(refused !== null && !("direction" in refused), "a body block fails a wick filter");
+  assert.match(refused.reason, /part must be wick/);
+
+  const taken = axisSystem({ blockPart: "body" }).decide(ctx);
+  assert.ok(taken !== null && "direction" in taken, "the body block passes a body filter");
+});
+
+test("the block-part filter still finds a passing block when the bar confirms several", () => {
+  const better: OrderBlock = { ...BLOCK, part: "body", behaviours: ["purge", "generate"] };
+  const taken = axisSystem({ blockPart: "wick" }).decide(
+    strategyContext({ orderBlocks: [better, { ...BLOCK, part: "wick" }] }),
+  );
+
+  assert.ok(taken !== null && "direction" in taken, "the wick block on the same bar is taken");
+});
+
+/** The dealing-range context with a CRT that purged the given side. */
+function contextWithCrt(side: "low" | "high"): ContextSnapshot {
+  return {
+    ...contextSnapshot("discount", true),
+    crt: { side, level: 9, extreme: 8.9, isCrt: true, kind: "purge" },
+    recentCrt: { side, level: 9, extreme: 8.9, isCrt: true, kind: "purge", barsAgo: 0 },
+  };
+}
+
+test("requireCrt only arms when the dealing range carries a matching CRT", () => {
+  const missing = axisSystem({ requireCrt: true }).decide(
+    strategyContext({ context: contextSnapshot("discount", true) }),
+  );
+  assert.equal(missing?.reason, "no CRT in the dealing range");
+
+  const wrongSide = axisSystem({ requireCrt: true }).decide(
+    strategyContext({ context: contextWithCrt("high") }),
+  );
+  assert.match(
+    wrongSide?.reason ?? "",
+    /CRT purged the high side, not the low side/,
+    "a long needs the low-side purge",
+  );
+
+  const matching = axisSystem({ requireCrt: true }).decide(
+    strategyContext({ context: contextWithCrt("low") }),
+  );
+  assert.ok(matching !== null && "direction" in matching, "the matching CRT arms the setup");
+  assert.equal(matching.direction, "long");
+
+  const unfiltered = axisSystem().decide(
+    strategyContext({ context: contextSnapshot("discount", true) }),
+  );
+  assert.ok(unfiltered !== null && "direction" in unfiltered, "without the gate no CRT is required");
+});
+
+test("fillOutsideKillzoneOnly defers a limit until the killzone has closed", () => {
+  const gated = cfg({ execution: { fillOutsideKillzoneOnly: true } });
+  const held = runBacktest(series(KILLZONE, CRT), gated, {
+    strategy: axisSystem(gated.execution),
+  });
+
+  assert.equal(held.trades.length, 0, "the fill inside the killzone is refused");
+  assert.ok(
+    held.decisions.some((d) => d.action === "wait" && /fill deferred: inside the killzone/.test(d.reason)),
+    "the deferral is logged",
+  );
+  const deferrals = held.decisions.filter((d) => /fill deferred/.test(d.reason));
+  assert.equal(deferrals.length, 1, "the deferral is logged once per setup");
+
+  // The same scenario, but the retrace only arrives after the London killzone (02:00-05:00 ET)
+  // has closed: the CRT through the engulfing candle, quiet bars, then the retrace and rally.
+  const quiet: [number, number, number, number][] = Array.from({ length: 180 }, () => [
+    9.6, 9.7, 9.55, 9.65,
+  ]);
+  const rows: [number, number, number, number][] = [...CRT.slice(0, 9), ...quiet, ...CRT.slice(9)];
+  const filled = runBacktest(series(KILLZONE, rows), gated, {
+    strategy: axisSystem(gated.execution),
+  });
+
+  assert.equal(filled.trades.length, 1, "the deferred limit fills outside the killzone");
+  const entryTime = filled.trades[0]!.entryTime;
+  const minutes = (entryTime - KILLZONE) / MIN;
+  assert.ok(minutes >= 180, `entry at +${minutes} minutes is after the killzone closes`);
+  assert.equal(filled.trades[0]!.entryPrice, 9.5, "the entry is still the block open");
 });

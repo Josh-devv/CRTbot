@@ -212,12 +212,36 @@ export interface BarSeries {
   bars: Bar[];
 }
 
+/**
+ * The measured edge filters (ticket 21): mechanical gates on which setups are taken. Every
+ * field is off when unset, so an absent block reproduces the unfiltered engine exactly.
+ */
+export interface ExecutionFilters {
+  /** Skip setups whose stop distance is under this many pips (1 pip = 0.0001). */
+  minRiskPips?: number;
+  /** Only take blocks whose zone resolution is this part of the candle (§6). */
+  blockPart?: "body" | "wick";
+  /** Only take blocks whose behaviour is exactly a purge (no liquidity generation). */
+  purgeOnly?: boolean;
+  /**
+   * Only take setups where the H4 context carries a CRT (§5.1's liquidity-purge trigger) whose
+   * purge side matches the setup: a low purge for a long, a high purge for a short.
+   */
+  requireCrt?: boolean;
+  /** How many H4 candles a CRT stays a valid trigger. Default 6 (24 hours). */
+  crtLookbackBars?: number;
+  /** Resting limits may only fill while outside a killzone. */
+  fillOutsideKillzoneOnly?: boolean;
+}
+
 export interface StrategyConfig {
   instrument: Instrument;
   session: SessionConfig;
   /** Structural significance tuning. */
   structure?: { swingWidth: number };
   strategy: { stopDistance: number };
+  /** The measured edge filters (ticket 21). Absent takes every qualifying setup. */
+  execution?: ExecutionFilters;
   /** Correlated-instrument divergence (§7.3). Absent means disabled. */
   smt?: SmtConfig;
   /** Exception protocols that stand the day down (§8). Absent enforces all three. */
@@ -274,6 +298,15 @@ export interface LiquidityEvent {
 }
 
 /**
+ * A CRT of the dealing range, with how many H4 candles ago it printed. The trigger stays valid
+ * for the configured lookback (§5.1), because monitoring starts after the purge, not on it.
+ */
+export interface CrtView extends LiquidityEvent {
+  /** 0 for the CRT on the current H4 candle, 1 for the previous candle, and so on. */
+  barsAgo: number;
+}
+
+/**
  * The H4 context map (ruleset §4): the dealing range aligned to the HTF bias, with the key
  * level and the CRT inside it.
  */
@@ -285,6 +318,8 @@ export interface ContextSnapshot {
   keyLevel: number;
   /** The CRT formed inside the dealing range on the current H4 candle, if any. */
   crt: LiquidityEvent | null;
+  /** The newest CRT within the lookback, when the CRT trigger is asked for; else null. */
+  recentCrt: CrtView | null;
   /** True when the premium/discount location agrees with the bias direction. */
   aligned: boolean;
 }
